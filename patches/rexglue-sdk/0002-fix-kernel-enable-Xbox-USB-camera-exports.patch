@@ -1,0 +1,25 @@
+From c6cabb3c9a2363947a7e43bf641cf94b485a67e0 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Tue, 21 Jul 2026 16:37:47 -0300
+Subject: [PATCH 2/6] fix(kernel): enable Xbox USB camera exports
+
+---
+ src/kernel/CMakeLists.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
+index 99ea636..a02e35a 100644
+--- a/src/kernel/CMakeLists.txt
++++ b/src/kernel/CMakeLists.txt
+@@ -50,7 +50,7 @@ set(REXKERNEL_SOURCES
+     xboxkrnl/xboxkrnl_rtl.cpp
+     xboxkrnl/xboxkrnl_strings.cpp
+     xboxkrnl/xboxkrnl_threading.cpp
+-    # xboxkrnl/xboxkrnl_usbcam.cpp  # TODO: lol eventually.
++    xboxkrnl/xboxkrnl_usbcam.cpp
+     xboxkrnl/xboxkrnl_video.cpp
+     xboxkrnl/xboxkrnl_xconfig.cpp
+     xboxkrnl/xboxkrnl_audio.cpp
+-- 
+2.53.0.windows.3
+

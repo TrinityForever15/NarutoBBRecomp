@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a scoped engineering improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What limitation does this solve, and which subsystem owns it?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and prior decisions
+      description: Link the relevant status, test, decision, or phase-report section.
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Proposed approach
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+    validations:
+      required: true
+  - type: checkboxes
+    id: language
+    attributes:
+      label: Contribution policy
+      options:
+        - label: This proposal is in English and does not require distributing game content.
+          required: true

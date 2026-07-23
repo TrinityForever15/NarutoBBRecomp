@@ -1,0 +1,19 @@
+Thread 14 "Main XThread (F" received signal SIGINT, Interrupt.
+[Switching to Thread 0x7fff8bffd640 (LWP 32)]
+0x0000555555a22853 in sub_821C4768 ()
+
+Thread 28 (Thread 0x7fff66ffa640 (LWP 46) "XThread66FFA640"):
+#0  0x00007ffff58e57f8 in clock_nanosleep () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff58ea677 in nanosleep () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff6e38d0c in rex::thread::Sleep(std::chrono::duration<long, std::ratio<1l, 1000000l> >) () from /tmp/f5run/librexruntime.so
+#3  0x00007ffff71024cf in rex::system::XThread::Delay(unsigned int, unsigned int, unsigned long) () from /tmp/f5run/librexruntime.so
+--
+Thread 14 (Thread 0x7fff8bffd640 (LWP 32) "Main XThread (F"):
+#0  0x0000555555a22853 in sub_821C4768 ()
+#1  0x0000555555a22390 in sub_821C4660 ()
+#2  0x0000555555a14fda in sub_821C1468 ()
+#3  0x00005555582ff48d in sub_82C0EB88 ()
+#4  0x00005555582f5a31 in sub_82C0B8F8 ()
+#5  0x00005555571836a7 in sub_8277C4C0 ()
+#6  0x0000555557183f7e in sub_8277C9C8 ()
+#7  0x000055555739f2aa in sub_827F83E8 ()

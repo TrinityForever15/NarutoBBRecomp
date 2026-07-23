@@ -1,0 +1,412 @@
+From bf5bb466a1c1d03ee4958d5c275fd54f018cb13f Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Tue, 21 Jul 2026 16:37:47 -0300
+Subject: [PATCH 3/6] fix(audio): stabilize XMA and SDL stream recovery
+
+---
+ include/rex/audio/conversion.h           |  44 +++++++
+ include/rex/audio/sdl/sdl_audio_driver.h |  24 ++++
+ src/audio/audio_system.cpp               |   7 +-
+ src/audio/sdl/sdl_audio_driver.cpp       | 155 +++++++++++++++++++++--
+ src/audio/xma_context.cpp                |  18 +++
+ 5 files changed, 235 insertions(+), 13 deletions(-)
+
+diff --git a/include/rex/audio/conversion.h b/include/rex/audio/conversion.h
+index a9fa7bd..5c8063b 100644
+--- a/include/rex/audio/conversion.h
++++ b/include/rex/audio/conversion.h
+@@ -73,6 +73,38 @@ inline void sequential_6_BE_to_interleaved_2_LE(float* output, const float* inpu
+     _mm_storeu_ps(&output[(sample + 2) * 2], _mm_unpackhi_ps(left, right));
+   }
+ }
++
++// Some Xbox 360 titles leave content in the surround buses that isn't meant
++// to be folded into a stereo endpoint. Keep the front soundstage intact and
++// add the center channel at -3 dB, with normalization to prevent clipping.
++inline void sequential_6_BE_to_interleaved_2_front_LE(
++    float* output, const float* input, size_t ch_sample_count) {
++  assert_true(ch_sample_count % 4 == 0);
++
++  const __m128i byte_swap_shuffle =
++      _mm_set_epi8(12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3);
++  const __m128 center_gain = _mm_set1_ps(0.7071067812f);
++  const __m128 normalize = _mm_set1_ps(0.5857864376f);
++
++  for (size_t sample = 0; sample < ch_sample_count; sample += 4) {
++    __m128 fl = _mm_loadu_ps(&input[0 * ch_sample_count + sample]);
++    __m128 fr = _mm_loadu_ps(&input[1 * ch_sample_count + sample]);
++    __m128 fc = _mm_loadu_ps(&input[2 * ch_sample_count + sample]);
++    fl = _mm_castsi128_ps(
++        _mm_shuffle_epi8(_mm_castps_si128(fl), byte_swap_shuffle));
++    fr = _mm_castsi128_ps(
++        _mm_shuffle_epi8(_mm_castps_si128(fr), byte_swap_shuffle));
++    fc = _mm_castsi128_ps(
++        _mm_shuffle_epi8(_mm_castps_si128(fc), byte_swap_shuffle));
++
++    const __m128 center = _mm_mul_ps(fc, center_gain);
++    const __m128 left = _mm_mul_ps(_mm_add_ps(fl, center), normalize);
++    const __m128 right = _mm_mul_ps(_mm_add_ps(fr, center), normalize);
++    _mm_storeu_ps(&output[sample * 2], _mm_unpacklo_ps(left, right));
++    _mm_storeu_ps(&output[(sample + 2) * 2],
++                  _mm_unpackhi_ps(left, right));
++  }
++}
+ #else
+ inline void sequential_6_BE_to_interleaved_6_LE(float* output, const float* input,
+                                                 size_t ch_sample_count) {
+@@ -98,6 +130,18 @@ inline void sequential_6_BE_to_interleaved_2_LE(float* output, const float* inpu
+     output[sample * 2 + 1] = (fr + br + center_halved) * (1.0f / 2.5f);
+   }
+ }
++inline void sequential_6_BE_to_interleaved_2_front_LE(
++    float* output, const float* input, size_t ch_sample_count) {
++  constexpr float center_gain = 0.7071067812f;
++  constexpr float normalize = 0.5857864376f;
++  for (size_t sample = 0; sample < ch_sample_count; sample++) {
++    const float fl = rex::byte_swap(input[0 * ch_sample_count + sample]);
++    const float fr = rex::byte_swap(input[1 * ch_sample_count + sample]);
++    const float fc = rex::byte_swap(input[2 * ch_sample_count + sample]);
++    output[sample * 2] = (fl + fc * center_gain) * normalize;
++    output[sample * 2 + 1] = (fr + fc * center_gain) * normalize;
++  }
++}
+ #endif
+ 
+ }  // namespace rex::audio::conversion
+diff --git a/include/rex/audio/sdl/sdl_audio_driver.h b/include/rex/audio/sdl/sdl_audio_driver.h
+index f8949ca..6947790 100644
+--- a/include/rex/audio/sdl/sdl_audio_driver.h
++++ b/include/rex/audio/sdl/sdl_audio_driver.h
+@@ -11,6 +11,8 @@
+ 
+ #pragma once
+ 
++#include <array>
++#include <atomic>
+ #include <mutex>
+ #include <queue>
+ #include <stack>
+@@ -49,6 +51,28 @@ class SDLAudioDriver : public AudioDriver {
+   std::queue<float*> frames_queued_ = {};
+   std::stack<float*> frames_unused_ = {};
+   std::mutex frames_mutex_ = {};
++
++  // Underrun concealment. Hard-cutting to zero (and back) at a frame boundary
++  // is a step discontinuity in the waveform, which is exactly what is heard as
++  // a click/crackle. We instead ramp out from the last emitted sample and ramp
++  // back in on the first frame that follows the gap.
++  static const uint32_t kConcealFadeSamples = 64;  // ~1.3 ms at 48 kHz
++  std::array<float, frame_channels_> last_samples_ = {};
++  // Start in refill mode too: do not send the first partially produced XMA
++  // frame straight to the device, as that creates the same startup crackle as
++  // an in-game underrun.
++  bool in_underrun_ = true;
++
++  // Credits owed to the guest that Semaphore::Release refused (the semaphore
++  // was already at its maximum count). Dropping them silently leaks the
++  // client's frame budget and starves audio permanently; we retry instead.
++  std::atomic<uint32_t> pending_releases_ = {0};
++
++  // Number of frames that must be queued before playback begins or resumes.
++  // Four frames (~21 ms) were not enough for Naruto's bursty XMA production:
++  // the device immediately starved again during scene changes. Sixteen frames
++  // provide an ~85 ms cushion while staying well below the 341 ms queue cap.
++  static const uint32_t kRefillFrames = 16;
+ };
+ 
+ }  // namespace rex::audio::sdl
+diff --git a/src/audio/audio_system.cpp b/src/audio/audio_system.cpp
+index fe62017..5f29c94 100644
+--- a/src/audio/audio_system.cpp
++++ b/src/audio/audio_system.cpp
+@@ -25,8 +25,11 @@
+ #include <rex/cvar.h>
+ 
+ REXCVAR_DEFINE_INT32(
+-    audio_maxqframes, 8, "Audio",
+-    "Max buffered audio frames (range 4-64). Lower reduces latency but may cause stuttering.");
++    audio_maxqframes, 64, "Audio",
++    "Max buffered audio frames (range 4-64). Each frame is about 5.3 ms at 48 kHz. "
++    "64 frames (~341 ms, the upstream Xenia default) survive the 1-2 s GPU/scene "
++    "stalls seen in Naruto cutscenes; 16 frames (~85 ms) did not, producing "
++    "NARUTO_AUDIO_UNDERRUN bursts heard as crackle and dropouts.");
+ 
+ // As with normal Microsoft, there are like twelve different ways to access
+ // the audio APIs. Early games use XMA*() methods almost exclusively to touch
+diff --git a/src/audio/sdl/sdl_audio_driver.cpp b/src/audio/sdl/sdl_audio_driver.cpp
+index 46719f3..1de9235 100644
+--- a/src/audio/sdl/sdl_audio_driver.cpp
++++ b/src/audio/sdl/sdl_audio_driver.cpp
+@@ -11,6 +11,8 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <atomic>
++#include <cmath>
+ #include <cstring>
+ 
+ #include <rex/assert.h>
+@@ -18,15 +20,69 @@
+ #include <rex/audio/flags.h>
+ #include <rex/audio/sdl/sdl_audio_driver.h>
+ #include <rex/cvar.h>
++#include <rex/chrono/clock.h>
+ #include <rex/dbg.h>
+ #include <rex/logging.h>
+ #include <rex/perf/counter.h>
+ #include <SDL3/SDL.h>
+ 
+ REXCVAR_DEFINE_BOOL(audio_mute, false, "Audio", "Mute audio output");
++REXCVAR_DEFINE_BOOL(audio_stereo_front_only, false, "Audio",
++                    "Use front and center channels only on stereo devices");
++REXCVAR_DEFINE_BOOL(audio_output_limiter, true, "Audio",
++                    "Sanitize invalid samples and softly limit output peaks");
+ 
+ namespace rex::audio::sdl {
+ 
++namespace {
++
++void ProtectOutputSamples(float* samples, size_t sample_count) {
++  constexpr float kKnee = 0.95f;
++  constexpr float kHeadroom = 1.0f - kKnee;
++  float input_peak = 0.0f;
++  uint32_t non_finite_count = 0;
++  uint32_t limited_count = 0;
++
++  for (size_t i = 0; i < sample_count; ++i) {
++    float sample = samples[i];
++    if (!std::isfinite(sample)) {
++      samples[i] = 0.0f;
++      ++non_finite_count;
++      continue;
++    }
++
++    const float magnitude = std::abs(sample);
++    input_peak = std::max(input_peak, magnitude);
++    if (magnitude > kKnee) {
++      // Continuous soft knee: y(0.95) = 0.95 and y approaches 1.0 without
++      // hard clipping, which avoids the strong crackle of effect transients.
++      const float limited_magnitude =
++          1.0f - kHeadroom /
++                     (1.0f + (magnitude - kKnee) / kHeadroom);
++      samples[i] = std::copysign(limited_magnitude, sample);
++      ++limited_count;
++    }
++  }
++
++  if (non_finite_count || input_peak > 1.05f) {
++    static std::atomic<uint64_t> last_peak_log_tick{0};
++    const uint64_t now_tick = rex::chrono::Clock::QueryHostTickCount();
++    const uint64_t tick_frequency =
++        rex::chrono::Clock::QueryHostTickFrequency();
++    uint64_t previous_tick =
++        last_peak_log_tick.load(std::memory_order_relaxed);
++    if ((!previous_tick || now_tick - previous_tick >= tick_frequency) &&
++        last_peak_log_tick.compare_exchange_strong(
++            previous_tick, now_tick, std::memory_order_relaxed)) {
++      REXAPU_WARN(
++          "NARUTO_AUDIO_PEAK peak={:.3f} limited_samples={} invalid_samples={}",
++          input_peak, limited_count, non_finite_count);
++    }
++  }
++}
++
++}  // namespace
++
+ SDLAudioDriver::SDLAudioDriver(memory::Memory* memory, rex::thread::Semaphore* semaphore)
+     : AudioDriver(memory), semaphore_(semaphore) {}
+ 
+@@ -93,6 +149,10 @@ bool SDLAudioDriver::Initialize() {
+     }
+   }
+ 
++  REXAPU_INFO("SDL audio output: guest={}ch @ {} Hz, device={}ch @ {} Hz", frame_channels_,
++              frame_frequency_, sdl_device_channels_,
++              obtained_spec.freq ? obtained_spec.freq : frame_frequency_);
++
+   if (!SDL_ResumeAudioDevice(sdl_device)) {
+     REXAPU_ERROR("SDL_ResumeAudioDevice() failed: {}", SDL_GetError());
+     return false;
+@@ -116,18 +176,22 @@ void SDLAudioDriver::SubmitFrame(uint32_t frame_ptr) {
+ 
+   std::memcpy(output_frame, input_frame, frame_samples_ * sizeof(float));
+ 
++  size_t queued_count;
++  {
++    std::unique_lock<std::mutex> guard(frames_mutex_);
++    frames_queued_.push(output_frame);
++    queued_count = frames_queued_.size();
++    PROFILE_BUFFER_QUEUE_DEPTH(static_cast<int64_t>(queued_count));
++  }
++
++  // Reading frames_queued_ outside the lock races with the SDL thread, which
++  // pops from it concurrently.
+   static uint32_t sdl_submit_count = 0;
+   if (sdl_submit_count < 10) {
+     REXAPU_DEBUG("SDLAudioDriver::SubmitFrame: frame_ptr={:08X} queued_count={}", frame_ptr,
+-                 frames_queued_.size() + 1);
++                 queued_count);
+     sdl_submit_count++;
+   }
+-
+-  {
+-    std::unique_lock<std::mutex> guard(frames_mutex_);
+-    frames_queued_.push(output_frame);
+-    PROFILE_BUFFER_QUEUE_DEPTH(static_cast<int64_t>(frames_queued_.size()));
+-  }
+ }
+ 
+ void SDLAudioDriver::Shutdown() {
+@@ -166,15 +230,47 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+     REXAPU_ERROR("SDLAudioDriver::SDLCallback failed to allocate {} samples", sample_count);
+     return;
+   }
++  const uint8_t channels = std::max<uint8_t>(driver->sdl_device_channels_, 1);
+   while (additional_amount > 0) {
+     static uint32_t sdl_callback_count = 0;
+     std::unique_lock<std::mutex> guard(driver->frames_mutex_);
+-    if (driver->frames_queued_.empty()) {
++    // After a gap, wait for a small cushion to rebuild before resuming. Handing
++    // out a single frame the instant one arrives guarantees the next callback
++    // underruns again, which is what turns one stall into a burst of clicks.
++    const bool starved =
++        driver->frames_queued_.empty() ||
++        (driver->in_underrun_ && driver->frames_queued_.size() < kRefillFrames);
++    if (starved) {
++      // Keep diagnostics out of the normal audio path. On underrun, emit at
++      // most one marker per second so a cutscene test can be correlated with
++      // visual stalls without flooding or materially affecting scheduling.
++      static std::atomic<uint64_t> last_underrun_log_tick{0};
++      const uint64_t now_tick = rex::chrono::Clock::QueryHostTickCount();
++      const uint64_t tick_frequency = rex::chrono::Clock::QueryHostTickFrequency();
++      uint64_t previous_tick = last_underrun_log_tick.load(std::memory_order_relaxed);
++      if ((!previous_tick || now_tick - previous_tick >= tick_frequency) &&
++          last_underrun_log_tick.compare_exchange_strong(
++              previous_tick, now_tick, std::memory_order_relaxed)) {
++        REXAPU_WARN("NARUTO_AUDIO_UNDERRUN requested_bytes={}", additional_amount);
++      }
+       if (sdl_callback_count < 10) {
+         REXAPU_DEBUG("SDLCallback: no frames queued (silence)");
+         sdl_callback_count++;
+       }
+       std::memset(data, 0, len);
++      if (!driver->in_underrun_) {
++        // First silent chunk of this gap: ramp the last emitted sample down to
++        // zero instead of cutting it off, so the gap starts without a click.
++        const uint32_t fade =
++            std::min<uint32_t>(kConcealFadeSamples, static_cast<uint32_t>(channel_samples_));
++        for (uint32_t s = 0; s < fade; ++s) {
++          const float gain = 1.0f - (static_cast<float>(s) / static_cast<float>(fade));
++          for (uint8_t ch = 0; ch < channels; ++ch) {
++            data[s * channels + ch] = driver->last_samples_[ch] * gain;
++          }
++        }
++        driver->in_underrun_ = true;
++      }
+       if (!SDL_PutAudioStreamData(stream, data, len)) {
+         REXAPU_ERROR("SDL_PutAudioStreamData() failed while filling silence: {}", SDL_GetError());
+         break;
+@@ -188,7 +284,13 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+       } else {
+         switch (driver->sdl_device_channels_) {
+           case 2:
+-            conversion::sequential_6_BE_to_interleaved_2_LE(data, buffer, channel_samples_);
++            if (REXCVAR_GET(audio_stereo_front_only)) {
++              conversion::sequential_6_BE_to_interleaved_2_front_LE(
++                  data, buffer, channel_samples_);
++            } else {
++              conversion::sequential_6_BE_to_interleaved_2_LE(
++                  data, buffer, channel_samples_);
++            }
+             break;
+           case 6:
+             conversion::sequential_6_BE_to_interleaved_6_LE(data, buffer, channel_samples_);
+@@ -197,7 +299,30 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+             assert_unhandled_case(driver->sdl_device_channels_);
+             break;
+         }
++        if (REXCVAR_GET(audio_output_limiter)) {
++          ProtectOutputSamples(data, sample_count);
++        }
+       }
++
++      if (driver->in_underrun_) {
++        // First real chunk after a gap: ramp in from silence for the same
++        // reason we ramped out.
++        const uint32_t fade =
++            std::min<uint32_t>(kConcealFadeSamples, static_cast<uint32_t>(channel_samples_));
++        for (uint32_t s = 0; s < fade; ++s) {
++          const float gain = static_cast<float>(s) / static_cast<float>(fade);
++          for (uint8_t ch = 0; ch < channels; ++ch) {
++            data[s * channels + ch] *= gain;
++          }
++        }
++        driver->in_underrun_ = false;
++      }
++
++      // Remember the tail so the next gap can ramp out from it.
++      for (uint8_t ch = 0; ch < channels; ++ch) {
++        driver->last_samples_[ch] = data[(channel_samples_ - 1) * channels + ch];
++      }
++
+       if (!SDL_PutAudioStreamData(stream, data, len)) {
+         REXAPU_ERROR("SDL_PutAudioStreamData() failed: {}", SDL_GetError());
+         driver->frames_unused_.push(buffer);
+@@ -205,8 +330,16 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+       }
+       driver->frames_unused_.push(buffer);
+ 
+-      auto ret = driver->semaphore_->Release(1, nullptr);
+-      assert_true(ret);
++      // Return the frame credit to the guest. If the semaphore is momentarily
++      // at its maximum count the release fails; dropping it permanently shrinks
++      // the client's frame budget, so the credit is carried over and retried.
++      uint32_t owed = driver->pending_releases_.exchange(0, std::memory_order_relaxed) + 1;
++      while (owed && driver->semaphore_->Release(1, nullptr)) {
++        --owed;
++      }
++      if (owed) {
++        driver->pending_releases_.fetch_add(owed, std::memory_order_relaxed);
++      }
+       additional_amount -= len;
+     }
+   }
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+index 451eb47..aa3aa59 100644
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -178,6 +178,22 @@ void XmaContext::Clear() {
+ }
+ 
+ void XmaContext::ClearLocked(XMA_CONTEXT_DATA* data) {
++  // A context clear is used by the game when a stream is stopped, restarted
++  // or replaced (for example, after pausing or changing background music).
++  // FFmpeg retains codec delay and partially decoded packets across calls;
++  // leaving that state alive lets samples from the old stream bleed into the
++  // new one as hiss, crackle or a brief wrong music segment. The Xbox XMA
++  // hardware clear discards this state, so mirror that behavior here.
++  if (av_context_ && av_context_->codec) {
++    avcodec_flush_buffers(av_context_);
++  }
++  if (av_frame_) {
++    av_frame_unref(av_frame_);
++  }
++  if (av_packet_) {
++    av_packet_unref(av_packet_);
++  }
++
+   data->input_buffer_0_valid = 0;
+   data->input_buffer_1_valid = 0;
+   data->output_buffer_valid = 0;
+@@ -189,6 +205,8 @@ void XmaContext::ClearLocked(XMA_CONTEXT_DATA* data) {
+   current_frame_remaining_subframes_ = 0;
+   loop_frame_output_limit_ = 0;
+   loop_start_skip_pending_ = false;
++  raw_frame_.fill(0);
++  xma_frame_.fill(0);
+ }
+ 
+ void XmaContext::Disable() {
+-- 
+2.53.0.windows.3
+

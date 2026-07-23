@@ -1,0 +1,36 @@
+From 880632f7a0d0fe0e7fefe9f937b56e187ed9fc91 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Tue, 21 Jul 2026 16:37:47 -0300
+Subject: [PATCH 1/6] fix(core): prevent suspended-thread lost wakeup
+
+---
+ src/core/threading_posix.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index e10e30b..f2f172f 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -1311,13 +1311,18 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+   current_thread_condition_ = &thread->handle_;
+   {
+     std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
++    // Publish the initial suspend count atomically with the state transition.
++    // Otherwise Resume may observe zero in between these two operations and
++    // the new thread will sleep forever (lost wakeup).
++    if (create_suspended) {
++      thread->handle_.suspend_count_ = 1;
++    }
+     thread->handle_.state_ = create_suspended ? State::kSuspended : State::kRunning;
+     thread->handle_.state_signal_.notify_all();
+   }
+ 
+   if (create_suspended) {
+     std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
+-    thread->handle_.suspend_count_ = 1;
+     thread->handle_.state_signal_.wait(lock,
+                                        [thread] { return thread->handle_.suspend_count_ == 0; });
+   }
+-- 
+2.53.0.windows.3
+

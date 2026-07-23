@@ -1,0 +1,10 @@
+* text=auto
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.sh text eol=lf
+*.patch text eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.bmp binary
+*.xtr binary

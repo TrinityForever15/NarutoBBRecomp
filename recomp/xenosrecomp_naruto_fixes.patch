@@ -1,0 +1,169 @@
+diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
+index 1c74034..6029f44 100644
+--- a/XenosRecomp/shader_common.h
++++ b/XenosRecomp/shader_common.h
+@@ -26,10 +26,10 @@ struct PushConstants
+ 
+ [[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
+ 
+-#define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
+-#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
+-#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 264)
+-#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 272)
++#define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 320)
++#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 324)
++#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 328)
++#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 336)
+ 
+ [[vk::constant_id(0)]] const uint g_SpecConstants = 0;
+ 
+@@ -38,10 +38,10 @@ struct PushConstants
+ #else
+ 
+ #define DEFINE_SHARED_CONSTANTS() \
+-    uint g_Booleans : packoffset(c16.x); \
+-    uint g_SwappedTexcoords : packoffset(c16.y); \
+-    float2 g_HalfPixelOffset : packoffset(c16.z); \
+-    float g_AlphaThreshold : packoffset(c17.x);
++    uint g_Booleans : packoffset(c20.x); \
++    uint g_SwappedTexcoords : packoffset(c20.y); \
++    float2 g_HalfPixelOffset : packoffset(c20.z); \
++    float g_AlphaThreshold : packoffset(c21.x);
+ 
+ uint g_SpecConstants();
+ 
+@@ -50,6 +50,7 @@ uint g_SpecConstants();
+ Texture2D<float4> g_Texture2DDescriptorHeap[] : register(t0, space0);
+ Texture3D<float4> g_Texture3DDescriptorHeap[] : register(t0, space1);
+ TextureCube<float4> g_TextureCubeDescriptorHeap[] : register(t0, space2);
++Texture1D<float4> g_Texture1DDescriptorHeap[] : register(t0, space5);
+ SamplerState g_SamplerDescriptorHeap[] : register(s0, space3);
+ 
+ uint2 getTexture2DDimensions(Texture2D<float4> texture)
+@@ -59,6 +60,26 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
+     return dimensions;
+ }
+ 
++uint getTexture1DDimensions(Texture1D<float4> texture)
++{
++    uint width;
++    texture.GetDimensions(width);
++    return width;
++}
++
++float4 tfetch1D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float texCoord)
++{
++    Texture1D<float4> texture = g_Texture1DDescriptorHeap[resourceDescriptorIndex];
++    // SampleLevel: valido em todos os stages (vertex texture fetch p/ bone matrices)
++    return texture.SampleLevel(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord, 0);
++}
++
++float getWeights1D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float texCoord)
++{
++    Texture1D<float4> texture = g_Texture1DDescriptorHeap[resourceDescriptorIndex];
++    return select(isnan(texCoord), 0.0, frac(texCoord * getTexture1DDimensions(texture) - 0.5));
++}
++
+ float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
+ {
+     Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
+diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
+index 698a418..9f6d2bd 100644
+--- a/XenosRecomp/shader_recompiler.cpp
++++ b/XenosRecomp/shader_recompiler.cpp
+@@ -122,7 +122,8 @@ static constexpr std::string_view TEXTURE_DIMENSIONS[] =
+ {
+     "2D",
+     "3D", 
+-    "Cube" 
++    "Cube",
++    "1D"
+ };
+ 
+ static FetchDestinationSwizzle getDestSwizzle(uint32_t dstSwizzle, uint32_t index)
+@@ -252,7 +253,13 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
+     bool subtractFromOne = false;
+ #endif
+ 
+-    auto findResult = samplers.find(instr.constIndex);
++    // NARUTO_RECOMP: vertex shader samplers usam fetch slots 16..31 no Xenos,
++    // mas a reflection D3D9 registra s0..s15 — normalizar o indice no lookup.
++    uint32_t samplerLookupIndex = instr.constIndex;
++    if (!isPixelShader && samplerLookupIndex >= 16)
++        samplerLookupIndex -= 16;
++
++    auto findResult = samplers.find(samplerLookupIndex);
+     if (findResult != samplers.end())
+     {
+         constNamePtr = findResult->second;
+@@ -263,7 +270,7 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
+     }
+     else
+     {
+-        constName = fmt::format("s{}", instr.constIndex);
++        constName = fmt::format("s{}", samplerLookupIndex);
+         constNamePtr = constName.c_str();
+     }
+ 
+@@ -1187,6 +1194,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         }
+     }
+ 
++    // NARUTO_RECOMP: declarar fallbacks sN para sampler slots usados sem reflection
++    for (uint32_t slot = 0; slot < 16; slot++)
++    {
++        if (samplers.find(slot) == samplers.end())
++        {
++            for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
++            {
++                println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
++                    slot, TEXTURE_DIMENSIONS[j], j * 64 + slot * 4);
++            }
++            println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
++                slot, std::size(TEXTURE_DIMENSIONS) * 64 + slot * 4);
++        }
++    }
++
+     out += "\n#else\n\n";
+ 
+     println("cbuffer {}ShaderConstants : register(b{}, space4)", isPixelShader ? "Pixel" : "Vertex", isPixelShader ? 1 : 0);
+@@ -1241,6 +1263,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         }
+     }
+ 
++    // NARUTO_RECOMP: fallbacks sN no cbuffer
++    for (uint32_t slot = 0; slot < 16; slot++)
++    {
++        if (samplers.find(slot) == samplers.end())
++        {
++            for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
++            {
++                println("\tuint s{}_Texture{}DescriptorIndex : packoffset(c{}.{});",
++                    slot, TEXTURE_DIMENSIONS[j], j * 4 + slot / 4, SWIZZLES[slot % 4]);
++            }
++            println("\tuint s{}_SamplerDescriptorIndex : packoffset(c{}.{});",
++                slot, 4 * std::size(TEXTURE_DIMENSIONS) + slot / 4, SWIZZLES[slot % 4]);
++        }
++    }
++
+     out += "\tDEFINE_SHARED_CONSTANTS();\n";
+     out += "};\n\n";
+ 
+@@ -1324,14 +1361,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+             out += '\t';
+ 
+-            for (auto& usageLocation : USAGE_LOCATIONS)
+-            {
+-                if (usageLocation.usage == vertexElement.usage && usageLocation.usageIndex == vertexElement.usageIndex)
+-                {
+-                    print("[[vk::location({})]] ", usageLocation.location);
+-                    break;
+-                }
+-            }
++            // NARUTO_RECOMP: atribuicao sequencial generica — a tabela do Unleashed
++            // nao cobre todos os semantics deste jogo e o DXC exige tudo-ou-nada.
++            print("[[vk::location({})]] ", i);
+ 
+             println("in {0} i{1}{2} : {3}{2},", usageType, USAGE_VARIABLES[uint32_t(vertexElement.usage)],
+                 uint32_t(vertexElement.usageIndex), USAGE_SEMANTICS[uint32_t(vertexElement.usage)]);

@@ -1,0 +1,256 @@
+From 1c3a5a0364ba7f5abe0ddcd22fa1a6d41120aeaf Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Wed, 22 Jul 2026 23:14:08 -0300
+Subject: [PATCH] feat(audio): add balanced stereo downmix diagnostics
+
+---
+ include/rex/audio/conversion.h     | 69 ++++++++++++++++++++-----
+ src/audio/sdl/sdl_audio_driver.cpp | 82 ++++++++++++++++++++++--------
+ 2 files changed, 118 insertions(+), 33 deletions(-)
+
+diff --git a/include/rex/audio/conversion.h b/include/rex/audio/conversion.h
+index 5c8063b..e393496 100644
+--- a/include/rex/audio/conversion.h
++++ b/include/rex/audio/conversion.h
+@@ -77,8 +77,8 @@ inline void sequential_6_BE_to_interleaved_2_LE(float* output, const float* inpu
+ // Some Xbox 360 titles leave content in the surround buses that isn't meant
+ // to be folded into a stereo endpoint. Keep the front soundstage intact and
+ // add the center channel at -3 dB, with normalization to prevent clipping.
+-inline void sequential_6_BE_to_interleaved_2_front_LE(
+-    float* output, const float* input, size_t ch_sample_count) {
++inline void sequential_6_BE_to_interleaved_2_front_LE(float* output, const float* input,
++                                                      size_t ch_sample_count) {
+   assert_true(ch_sample_count % 4 == 0);
+ 
+   const __m128i byte_swap_shuffle =
+@@ -90,19 +90,50 @@ inline void sequential_6_BE_to_interleaved_2_front_LE(
+     __m128 fl = _mm_loadu_ps(&input[0 * ch_sample_count + sample]);
+     __m128 fr = _mm_loadu_ps(&input[1 * ch_sample_count + sample]);
+     __m128 fc = _mm_loadu_ps(&input[2 * ch_sample_count + sample]);
+-    fl = _mm_castsi128_ps(
+-        _mm_shuffle_epi8(_mm_castps_si128(fl), byte_swap_shuffle));
+-    fr = _mm_castsi128_ps(
+-        _mm_shuffle_epi8(_mm_castps_si128(fr), byte_swap_shuffle));
+-    fc = _mm_castsi128_ps(
+-        _mm_shuffle_epi8(_mm_castps_si128(fc), byte_swap_shuffle));
++    fl = _mm_castsi128_ps(_mm_shuffle_epi8(_mm_castps_si128(fl), byte_swap_shuffle));
++    fr = _mm_castsi128_ps(_mm_shuffle_epi8(_mm_castps_si128(fr), byte_swap_shuffle));
++    fc = _mm_castsi128_ps(_mm_shuffle_epi8(_mm_castps_si128(fc), byte_swap_shuffle));
+ 
+     const __m128 center = _mm_mul_ps(fc, center_gain);
+     const __m128 left = _mm_mul_ps(_mm_add_ps(fl, center), normalize);
+     const __m128 right = _mm_mul_ps(_mm_add_ps(fr, center), normalize);
+     _mm_storeu_ps(&output[sample * 2], _mm_unpacklo_ps(left, right));
+-    _mm_storeu_ps(&output[(sample + 2) * 2],
+-                  _mm_unpackhi_ps(left, right));
++    _mm_storeu_ps(&output[(sample + 2) * 2], _mm_unpackhi_ps(left, right));
++  }
++}
++
++// ITU-style stereo fold-down without LFE. Keep the total coefficient sum at
++// one for full-scale correlated input, while giving center and surround equal
++// -3 dB weighting before normalization. Compared with the legacy mix this
++// raises center intelligibility and reduces surround masking.
++inline void sequential_6_BE_to_interleaved_2_balanced_LE(float* output, const float* input,
++                                                         size_t ch_sample_count) {
++  assert_true(ch_sample_count % 4 == 0);
++
++  const __m128i byte_swap_shuffle =
++      _mm_set_epi8(12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3);
++  const __m128 minus_3db = _mm_set1_ps(0.7071067812f);
++  const __m128 normalize = _mm_set1_ps(0.4142135624f);
++
++  for (size_t sample = 0; sample < ch_sample_count; sample += 4) {
++    __m128 fl = _mm_loadu_ps(&input[0 * ch_sample_count + sample]);
++    __m128 fr = _mm_loadu_ps(&input[1 * ch_sample_count + sample]);
++    __m128 fc = _mm_loadu_ps(&input[2 * ch_sample_count + sample]);
++    __m128 bl = _mm_loadu_ps(&input[4 * ch_sample_count + sample]);
++    __m128 br = _mm_loadu_ps(&input[5 * ch_sample_count + sample]);
++    fl = _mm_castsi128_ps(_mm_shuffle_epi8(_mm_castps_si128(fl), byte_swap_shuffle));
++    fr = _mm_castsi128_ps(_mm_shuffle_epi8(_mm_castps_si128(fr), byte_swap_shuffle));
++    fc = _mm_castsi128_ps(_mm_shuffle_epi8(_mm_castps_si128(fc), byte_swap_shuffle));
++    bl = _mm_castsi128_ps(_mm_shuffle_epi8(_mm_castps_si128(bl), byte_swap_shuffle));
++    br = _mm_castsi128_ps(_mm_shuffle_epi8(_mm_castps_si128(br), byte_swap_shuffle));
++
++    const __m128 center = _mm_mul_ps(fc, minus_3db);
++    const __m128 left =
++        _mm_mul_ps(_mm_add_ps(fl, _mm_add_ps(center, _mm_mul_ps(bl, minus_3db))), normalize);
++    const __m128 right =
++        _mm_mul_ps(_mm_add_ps(fr, _mm_add_ps(center, _mm_mul_ps(br, minus_3db))), normalize);
++    _mm_storeu_ps(&output[sample * 2], _mm_unpacklo_ps(left, right));
++    _mm_storeu_ps(&output[(sample + 2) * 2], _mm_unpackhi_ps(left, right));
+   }
+ }
+ #else
+@@ -130,8 +161,8 @@ inline void sequential_6_BE_to_interleaved_2_LE(float* output, const float* inpu
+     output[sample * 2 + 1] = (fr + br + center_halved) * (1.0f / 2.5f);
+   }
+ }
+-inline void sequential_6_BE_to_interleaved_2_front_LE(
+-    float* output, const float* input, size_t ch_sample_count) {
++inline void sequential_6_BE_to_interleaved_2_front_LE(float* output, const float* input,
++                                                      size_t ch_sample_count) {
+   constexpr float center_gain = 0.7071067812f;
+   constexpr float normalize = 0.5857864376f;
+   for (size_t sample = 0; sample < ch_sample_count; sample++) {
+@@ -142,6 +173,20 @@ inline void sequential_6_BE_to_interleaved_2_front_LE(
+     output[sample * 2 + 1] = (fr + fc * center_gain) * normalize;
+   }
+ }
++inline void sequential_6_BE_to_interleaved_2_balanced_LE(float* output, const float* input,
++                                                         size_t ch_sample_count) {
++  constexpr float minus_3db = 0.7071067812f;
++  constexpr float normalize = 0.4142135624f;
++  for (size_t sample = 0; sample < ch_sample_count; sample++) {
++    const float fl = rex::byte_swap(input[0 * ch_sample_count + sample]);
++    const float fr = rex::byte_swap(input[1 * ch_sample_count + sample]);
++    const float fc = rex::byte_swap(input[2 * ch_sample_count + sample]);
++    const float bl = rex::byte_swap(input[4 * ch_sample_count + sample]);
++    const float br = rex::byte_swap(input[5 * ch_sample_count + sample]);
++    output[sample * 2] = (fl + (fc + bl) * minus_3db) * normalize;
++    output[sample * 2 + 1] = (fr + (fc + br) * minus_3db) * normalize;
++  }
++}
+ #endif
+ 
+ }  // namespace rex::audio::conversion
+diff --git a/src/audio/sdl/sdl_audio_driver.cpp b/src/audio/sdl/sdl_audio_driver.cpp
+index 1de9235..609578d 100644
+--- a/src/audio/sdl/sdl_audio_driver.cpp
++++ b/src/audio/sdl/sdl_audio_driver.cpp
+@@ -29,6 +29,10 @@
+ REXCVAR_DEFINE_BOOL(audio_mute, false, "Audio", "Mute audio output");
+ REXCVAR_DEFINE_BOOL(audio_stereo_front_only, false, "Audio",
+                     "Use front and center channels only on stereo devices");
++REXCVAR_DEFINE_BOOL(audio_stereo_balanced_downmix, false, "Audio",
++                    "Use a balanced ITU-style 5.1 to stereo downmix");
++REXCVAR_DEFINE_BOOL(audio_channel_diagnostics, false, "Audio",
++                    "Log input RMS and peak levels for all six guest channels");
+ REXCVAR_DEFINE_BOOL(audio_output_limiter, true, "Audio",
+                     "Sanitize invalid samples and softly limit output peaks");
+ 
+@@ -56,9 +60,7 @@ void ProtectOutputSamples(float* samples, size_t sample_count) {
+     if (magnitude > kKnee) {
+       // Continuous soft knee: y(0.95) = 0.95 and y approaches 1.0 without
+       // hard clipping, which avoids the strong crackle of effect transients.
+-      const float limited_magnitude =
+-          1.0f - kHeadroom /
+-                     (1.0f + (magnitude - kKnee) / kHeadroom);
++      const float limited_magnitude = 1.0f - kHeadroom / (1.0f + (magnitude - kKnee) / kHeadroom);
+       samples[i] = std::copysign(limited_magnitude, sample);
+       ++limited_count;
+     }
+@@ -67,20 +69,55 @@ void ProtectOutputSamples(float* samples, size_t sample_count) {
+   if (non_finite_count || input_peak > 1.05f) {
+     static std::atomic<uint64_t> last_peak_log_tick{0};
+     const uint64_t now_tick = rex::chrono::Clock::QueryHostTickCount();
+-    const uint64_t tick_frequency =
+-        rex::chrono::Clock::QueryHostTickFrequency();
+-    uint64_t previous_tick =
+-        last_peak_log_tick.load(std::memory_order_relaxed);
++    const uint64_t tick_frequency = rex::chrono::Clock::QueryHostTickFrequency();
++    uint64_t previous_tick = last_peak_log_tick.load(std::memory_order_relaxed);
+     if ((!previous_tick || now_tick - previous_tick >= tick_frequency) &&
+-        last_peak_log_tick.compare_exchange_strong(
+-            previous_tick, now_tick, std::memory_order_relaxed)) {
+-      REXAPU_WARN(
+-          "NARUTO_AUDIO_PEAK peak={:.3f} limited_samples={} invalid_samples={}",
+-          input_peak, limited_count, non_finite_count);
++        last_peak_log_tick.compare_exchange_strong(previous_tick, now_tick,
++                                                   std::memory_order_relaxed)) {
++      REXAPU_WARN("NARUTO_AUDIO_PEAK peak={:.3f} limited_samples={} invalid_samples={}", input_peak,
++                  limited_count, non_finite_count);
+     }
+   }
+ }
+ 
++void LogInputChannelLevels(const float* input, size_t channel_sample_count) {
++  static std::atomic<uint64_t> last_log_tick{0};
++  const uint64_t now_tick = rex::chrono::Clock::QueryHostTickCount();
++  const uint64_t tick_frequency = rex::chrono::Clock::QueryHostTickFrequency();
++  uint64_t previous_tick = last_log_tick.load(std::memory_order_relaxed);
++  if (previous_tick && now_tick - previous_tick < tick_frequency) {
++    return;
++  }
++  if (!last_log_tick.compare_exchange_strong(previous_tick, now_tick, std::memory_order_relaxed)) {
++    return;
++  }
++
++  std::array<float, 6> peaks{};
++  std::array<double, 6> square_sums{};
++  for (size_t channel = 0; channel < 6; ++channel) {
++    for (size_t sample_index = 0; sample_index < channel_sample_count; ++sample_index) {
++      const float sample = rex::byte_swap(input[channel * channel_sample_count + sample_index]);
++      if (!std::isfinite(sample)) {
++        continue;
++      }
++      peaks[channel] = std::max(peaks[channel], std::abs(sample));
++      square_sums[channel] += static_cast<double>(sample) * sample;
++    }
++  }
++
++  std::array<float, 6> rms{};
++  for (size_t channel = 0; channel < 6; ++channel) {
++    rms[channel] = static_cast<float>(std::sqrt(square_sums[channel] / channel_sample_count));
++  }
++  REXAPU_INFO(
++      "NARUTO_AUDIO_CHANNELS "
++      "rms=[{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f}] "
++      "peak=[{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f}] "
++      "order=FL,FR,FC,LFE,BL,BR",
++      rms[0], rms[1], rms[2], rms[3], rms[4], rms[5], peaks[0], peaks[1], peaks[2], peaks[3],
++      peaks[4], peaks[5]);
++}
++
+ }  // namespace
+ 
+ SDLAudioDriver::SDLAudioDriver(memory::Memory* memory, rex::thread::Semaphore* semaphore)
+@@ -237,9 +274,8 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+     // After a gap, wait for a small cushion to rebuild before resuming. Handing
+     // out a single frame the instant one arrives guarantees the next callback
+     // underruns again, which is what turns one stall into a burst of clicks.
+-    const bool starved =
+-        driver->frames_queued_.empty() ||
+-        (driver->in_underrun_ && driver->frames_queued_.size() < kRefillFrames);
++    const bool starved = driver->frames_queued_.empty() ||
++                         (driver->in_underrun_ && driver->frames_queued_.size() < kRefillFrames);
+     if (starved) {
+       // Keep diagnostics out of the normal audio path. On underrun, emit at
+       // most one marker per second so a cutscene test can be correlated with
+@@ -249,8 +285,8 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+       const uint64_t tick_frequency = rex::chrono::Clock::QueryHostTickFrequency();
+       uint64_t previous_tick = last_underrun_log_tick.load(std::memory_order_relaxed);
+       if ((!previous_tick || now_tick - previous_tick >= tick_frequency) &&
+-          last_underrun_log_tick.compare_exchange_strong(
+-              previous_tick, now_tick, std::memory_order_relaxed)) {
++          last_underrun_log_tick.compare_exchange_strong(previous_tick, now_tick,
++                                                         std::memory_order_relaxed)) {
+         REXAPU_WARN("NARUTO_AUDIO_UNDERRUN requested_bytes={}", additional_amount);
+       }
+       if (sdl_callback_count < 10) {
+@@ -282,14 +318,18 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+       if (REXCVAR_GET(audio_mute)) {
+         std::memset(data, 0, len);
+       } else {
++        if (REXCVAR_GET(audio_channel_diagnostics)) {
++          LogInputChannelLevels(buffer, channel_samples_);
++        }
+         switch (driver->sdl_device_channels_) {
+           case 2:
+             if (REXCVAR_GET(audio_stereo_front_only)) {
+-              conversion::sequential_6_BE_to_interleaved_2_front_LE(
+-                  data, buffer, channel_samples_);
++              conversion::sequential_6_BE_to_interleaved_2_front_LE(data, buffer, channel_samples_);
++            } else if (REXCVAR_GET(audio_stereo_balanced_downmix)) {
++              conversion::sequential_6_BE_to_interleaved_2_balanced_LE(data, buffer,
++                                                                       channel_samples_);
+             } else {
+-              conversion::sequential_6_BE_to_interleaved_2_LE(
+-                  data, buffer, channel_samples_);
++              conversion::sequential_6_BE_to_interleaved_2_LE(data, buffer, channel_samples_);
+             }
+             break;
+           case 6:
+-- 
+2.55.0.windows.3
+

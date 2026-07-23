@@ -1,0 +1,96 @@
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index e10e30b..27e2d92 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -1311,13 +1311,20 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+   current_thread_condition_ = &thread->handle_;
+   {
+     std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
++    // FIX(lost-wakeup): suspend_count_ must be set BEFORE the state change is
++    // published. Otherwise a creator whose WaitStarted() returns in the window
++    // between the two critical sections calls Resume(), observes
++    // suspend_count_ == 0, does nothing - and this thread then sets
++    // suspend_count_ = 1 and waits forever.
++    if (create_suspended) {
++      thread->handle_.suspend_count_ = 1;
++    }
+     thread->handle_.state_ = create_suspended ? State::kSuspended : State::kRunning;
+     thread->handle_.state_signal_.notify_all();
+   }
+ 
+   if (create_suspended) {
+     std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
+-    thread->handle_.suspend_count_ = 1;
+     thread->handle_.state_signal_.wait(lock,
+                                        [thread] { return thread->handle_.suspend_count_ == 0; });
+   }
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index 3877b1a..0a8d529 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <atomic>
+ #include <rex/graphics/graphics_system.h>
+ 
+ #include <algorithm>
+@@ -241,6 +242,24 @@ void GraphicsSystem::WriteRegisterThunk(void* ppc_context, GraphicsSystem* gs, u
+ uint32_t GraphicsSystem::ReadRegister(uint32_t addr) {
+   uint32_t r = (addr & 0xFFFF) / 4;
+ 
++#define REX_TRACE_REG_POLL 1
++#if REX_TRACE_REG_POLL
++  {
++    static std::atomic<uint64_t> poll_counts[8]{};
++    static std::atomic<uint32_t> poll_regs[8]{};
++    for (int i = 0; i < 8; i++) {
++      uint32_t expect = poll_regs[i].load();
++      if (expect == r || (expect == 0 && poll_regs[i].compare_exchange_strong(expect, r))) {
++        uint64_t n = ++poll_counts[i];
++        if (n == 1 || n % 300 == 0) {
++          REXGPU_WARN("REG_POLL reg={:04X} count={}", r, n);
++        }
++        break;
++      }
++    }
++  }
++#endif
++
+   switch (r) {
+     case 0x0F00:  // RB_EDRAM_TIMING
+       return 0x08100748;
+diff --git a/src/kernel/CMakeLists.txt b/src/kernel/CMakeLists.txt
+index 99ea636..a02e35a 100644
+--- a/src/kernel/CMakeLists.txt
++++ b/src/kernel/CMakeLists.txt
+@@ -50,7 +50,7 @@ set(REXKERNEL_SOURCES
+     xboxkrnl/xboxkrnl_rtl.cpp
+     xboxkrnl/xboxkrnl_strings.cpp
+     xboxkrnl/xboxkrnl_threading.cpp
+-    # xboxkrnl/xboxkrnl_usbcam.cpp  # TODO: lol eventually.
++    xboxkrnl/xboxkrnl_usbcam.cpp
+     xboxkrnl/xboxkrnl_video.cpp
+     xboxkrnl/xboxkrnl_xconfig.cpp
+     xboxkrnl/xboxkrnl_audio.cpp
+diff --git a/src/system/function_dispatcher.cpp b/src/system/function_dispatcher.cpp
+index 67f7070..cd9bd16 100644
+--- a/src/system/function_dispatcher.cpp
++++ b/src/system/function_dispatcher.cpp
+@@ -35,8 +35,15 @@ FunctionDispatcher* GetBoundFunctionDispatcher() {
+ }  // namespace
+ 
+ static void InvalidFunctionTrap(PPCContext& ctx, uint8_t* /*base*/) {
++#define REX_COLLECT_MISSING_FUNCS 1
++#ifdef REX_COLLECT_MISSING_FUNCS
++  REXLOG_ERROR("MISSING_GUEST_FUNC 0x{:08X}", ctx.last_indirect_target);
++  // continue: emulate a no-op function (blr)
++  return;
++#else
+   REX_FATAL("Call to invalid or unregistered function at guest address 0x{:08X}",
+             ctx.last_indirect_target);
++#endif
+ }
+ 
+ PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {

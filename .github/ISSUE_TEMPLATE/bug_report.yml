@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a reproducible runtime, graphics, audio, guest CPU, or timing problem
+title: "[Bug]: "
+labels: ["needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach game files, screenshots containing copyrighted game content, GPU traces, generated guest C++, or crash dumps containing proprietary data. Share textual markers and hashes instead.
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Subsystem
+      options:
+        - Guest CPU / missing function
+        - Graphics
+        - Audio
+        - FPS / timing
+        - Input
+        - Build / tooling
+        - Save / filesystem
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build or commit
+      description: Commit SHA and local executable/runtime hashes when available.
+    validations:
+      required: true
+  - type: input
+    id: launcher
+    attributes:
+      label: Launcher and arguments
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Include exact scene, voice language, and whether pause, F9, or F10 was used.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Relevant text log markers
+      description: Paste only the smallest relevant text excerpt, with secrets and proprietary data removed.
+  - type: checkboxes
+    id: content
+    attributes:
+      label: Content policy
+      options:
+        - label: I have not attached or linked copyrighted game content or proprietary-derived artifacts.
+          required: true

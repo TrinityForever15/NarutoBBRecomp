@@ -1,0 +1,17 @@
+name: Public content and repository invariants
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  invariants:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate repository invariants
+        shell: powershell
+        run: ./scripts/test_project_invariants.ps1

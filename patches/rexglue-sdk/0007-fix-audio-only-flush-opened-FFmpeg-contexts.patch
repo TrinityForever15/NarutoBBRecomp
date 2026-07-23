@@ -1,0 +1,29 @@
+From 6e023b7621690ca7808ea2bf5ddeb1a9ff01dd42 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Wed, 22 Jul 2026 21:56:55 -0300
+Subject: [PATCH] fix(audio): only flush opened FFmpeg contexts
+
+---
+ src/audio/xma_context.cpp | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+index aa3aa59..1357e7c 100644
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -184,7 +184,11 @@ void XmaContext::ClearLocked(XMA_CONTEXT_DATA* data) {
+   // leaving that state alive lets samples from the old stream bleed into the
+   // new one as hiss, crackle or a brief wrong music segment. The Xbox XMA
+   // hardware clear discards this state, so mirror that behavior here.
+-  if (av_context_ && av_context_->codec) {
++  // avcodec_alloc_context3(codec) sets AVCodecContext::codec immediately, but
++  // AVCodecContext::internal only exists after avcodec_open2 succeeds.
++  // avcodec_flush_buffers dereferences internal without a null check, so a
++  // clear of an allocated-but-not-yet-opened XMA context must not call it.
++  if (av_context_ && avcodec_is_open(av_context_)) {
+     avcodec_flush_buffers(av_context_);
+   }
+   if (av_frame_) {
+-- 
+2.55.0.windows.3
+

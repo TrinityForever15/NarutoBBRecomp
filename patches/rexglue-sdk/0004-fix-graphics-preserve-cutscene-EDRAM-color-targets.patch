@@ -1,0 +1,31 @@
+From bcfda8ede3126614310a9acfa2af238a604ff1c5 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Tue, 21 Jul 2026 16:37:47 -0300
+Subject: [PATCH 4/6] fix(graphics): preserve cutscene EDRAM color targets
+
+---
+ src/graphics/util/draw_extent_estimator.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/graphics/util/draw_extent_estimator.cpp b/src/graphics/util/draw_extent_estimator.cpp
+index 47d40f7..8bb422f 100644
+--- a/src/graphics/util/draw_extent_estimator.cpp
++++ b/src/graphics/util/draw_extent_estimator.cpp
+@@ -24,7 +24,13 @@
+ #include <rex/memory.h>
+ #include <rex/ui/graphics_util.h>
+ 
+-REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu, false, "GPU",
++// NARUTO FIX (19/07/2026): restaurado o default TRUE do Xenia. Com FALSE, um
++// draw de máscara depth/stencil das cutscenes (rect full-screen, clip_disable,
++// scissor 8192, pitch 640 + 4x MSAA) estimava height_used=1024 e reivindicava
++// os 2048 tiles do EDRAM inteiro com wrap, transferindo (destrutivamente) todo
++// o color RT0 para o depth RT — telas pretas no modo História. O comentário
++// original do Xenia (abaixo) descreve exatamente essa corrupção.
++REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu, true, "GPU",
+                     "Execute unclipped draw vertex shader on CPU");
+ 
+ REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu_with_scissor, false, "GPU",
+-- 
+2.53.0.windows.3
+

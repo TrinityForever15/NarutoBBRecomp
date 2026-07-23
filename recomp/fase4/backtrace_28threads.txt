@@ -1,0 +1,251 @@
+SIGINT is used by the debugger.
+Are you sure you want to change it? (y or n) [answered Y; input not from terminal]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+[New Thread 0x7ffff4bcf640 (LWP 18)]
+[Detaching after fork from child process 19]
+[New Thread 0x7fffe3dff640 (LWP 20)]
+[New Thread 0x7fffe35fe640 (LWP 21)]
+[New Thread 0x7fffe2dfd640 (LWP 22)]
+[New Thread 0x7fffe25fc640 (LWP 23)]
+[New Thread 0x7fffe1dfb640 (LWP 24)]
+[New Thread 0x7fffe15fa640 (LWP 25)]
+[New Thread 0x7fffbe8d9640 (LWP 26)]
+[New Thread 0x7fffbd8d8640 (LWP 27)]
+[New Thread 0x7fffb7fff640 (LWP 28)]
+[New Thread 0x7fffb6ffe640 (LWP 29)]
+[New Thread 0x7fffb55fb640 (LWP 30)]
+[New Thread 0x7fff8bffd640 (LWP 31)]
+[New Thread 0x7fffbc7d6640 (LWP 32)]
+[New Thread 0x7fffb45fa640 (LWP 33)]
+[New Thread 0x7fff8affc640 (LWP 34)]
+[New Thread 0x7fff8a7fb640 (LWP 35)]
+[New Thread 0x7fff897fa640 (LWP 36)]
+[New Thread 0x7fff7bfff640 (LWP 37)]
+[New Thread 0x7fff7affe640 (LWP 38)]
+[New Thread 0x7fff79ffd640 (LWP 39)]
+[New Thread 0x7fff6bfff640 (LWP 40)]
+[New Thread 0x7fff6affe640 (LWP 41)]
+[New Thread 0x7fff69ffd640 (LWP 42)]
+[New Thread 0x7fff68ffc640 (LWP 43)]
+[New Thread 0x7fff67ffb640 (LWP 44)]
+
+Thread 14 "Main XThread (F" received signal SIGSEGV, Segmentation fault.
+[Switching to Thread 0x7fff8bffd640 (LWP 31)]
+0x000055555592befe in sub_8217AB20 ()
+
+Thread 27 (Thread 0x7fff67ffb640 (LWP 44) "XThread67FFB640"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff768c6db in rex::thread::PosixConditionBase::Wait(std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff710b50a in rex::system::XObject::Wait(unsigned int, unsigned int, unsigned int, unsigned long*) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff72592d2 in rex::kernel::xboxkrnl::NtWaitForSingleObjectEx_entry(unsigned int, unsigned int, unsigned int, rex::MappedPtr<rex::endian_store<unsigned long, (std::endian)4321> >) () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff7761b0f in _ZN3rex3ppc19HostToGuestFunctionITnDaXadL_ZNS_6kernel8xboxkrnl29NtWaitForSingleObjectEx_entryEjjjNS_9MappedPtrINS_12endian_storeImLSt6endian4321EEEEEEEEEvR10PPCContextPh () from /tmp/narutobb/build/librexruntime.so
+
+Thread 26 (Thread 0x7fff68ffc640 (LWP 43) "XThread68FFC640"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff768c6db in rex::thread::PosixConditionBase::Wait(std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff710b50a in rex::system::XObject::Wait(unsigned int, unsigned int, unsigned int, unsigned long*) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff72592d2 in rex::kernel::xboxkrnl::NtWaitForSingleObjectEx_entry(unsigned int, unsigned int, unsigned int, rex::MappedPtr<rex::endian_store<unsigned long, (std::endian)4321> >) () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff7761b0f in _ZN3rex3ppc19HostToGuestFunctionITnDaXadL_ZNS_6kernel8xboxkrnl29NtWaitForSingleObjectEx_entryEjjjNS_9MappedPtrINS_12endian_storeImLSt6endian4321EEEEEEEEEvR10PPCContextPh () from /tmp/narutobb/build/librexruntime.so
+
+Thread 25 (Thread 0x7fff69ffd640 (LWP 42) "XThread69FFD640"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff768c6db in rex::thread::PosixConditionBase::Wait(std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff710b50a in rex::system::XObject::Wait(unsigned int, unsigned int, unsigned int, unsigned long*) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff725915a in rex::kernel::xboxkrnl::xeKeWaitForSingleObject(void*, unsigned int, unsigned int, unsigned int, unsigned long*) () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff7761abc in _ZN3rex3ppc19HostToGuestFunctionITnDaXadL_ZNS_6kernel8xboxkrnl27KeWaitForSingleObject_entryENS_9MappedPtrIvEEjjjNS4_INS_12endian_storeImLSt6endian4321EEEEEEEEEvR10PPCContextPh () from /tmp/narutobb/build/librexruntime.so
+
+Thread 24 (Thread 0x7fff6affe640 (LWP 41) "XThread6AFFE640"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff58942dd in pthread_cond_clockwait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff768c790 in rex::thread::PosixConditionBase::Wait(std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff710b50a in rex::system::XObject::Wait(unsigned int, unsigned int, unsigned int, unsigned long*) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff725915a in rex::kernel::xboxkrnl::xeKeWaitForSingleObject(void*, unsigned int, unsigned int, unsigned int, unsigned long*) () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff7761abc in _ZN3rex3ppc19HostToGuestFunctionITnDaXadL_ZNS_6kernel8xboxkrnl27KeWaitForSingleObject_entryENS_9MappedPtrIvEEjjjNS4_INS_12endian_storeImLSt6endian4321EEEEEEEEEvR10PPCContextPh () from /tmp/narutobb/build/librexruntime.so
+
+Thread 23 (Thread 0x7fff6bfff640 (LWP 40) "XThread6BFFF640"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff768c6db in rex::thread::PosixConditionBase::Wait(std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff710b50a in rex::system::XObject::Wait(unsigned int, unsigned int, unsigned int, unsigned long*) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff72592d2 in rex::kernel::xboxkrnl::NtWaitForSingleObjectEx_entry(unsigned int, unsigned int, unsigned int, rex::MappedPtr<rex::endian_store<unsigned long, (std::endian)4321> >) () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff7761b0f in _ZN3rex3ppc19HostToGuestFunctionITnDaXadL_ZNS_6kernel8xboxkrnl29NtWaitForSingleObjectEx_entryEjjjNS_9MappedPtrINS_12endian_storeImLSt6endian4321EEEEEEEEEvR10PPCContextPh () from /tmp/narutobb/build/librexruntime.so
+
+Thread 22 (Thread 0x7fff79ffd640 (LWP 39) "XThread79FFD640"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff768c6db in rex::thread::PosixConditionBase::Wait(std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff710b50a in rex::system::XObject::Wait(unsigned int, unsigned int, unsigned int, unsigned long*) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff72592d2 in rex::kernel::xboxkrnl::NtWaitForSingleObjectEx_entry(unsigned int, unsigned int, unsigned int, rex::MappedPtr<rex::endian_store<unsigned long, (std::endian)4321> >) () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff7761b0f in _ZN3rex3ppc19HostToGuestFunctionITnDaXadL_ZNS_6kernel8xboxkrnl29NtWaitForSingleObjectEx_entryEjjjNS_9MappedPtrINS_12endian_storeImLSt6endian4321EEEEEEEEEvR10PPCContextPh () from /tmp/narutobb/build/librexruntime.so
+
+Thread 21 (Thread 0x7fff7affe640 (LWP 38) "XThread7AFFE640"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff768c6db in rex::thread::PosixConditionBase::Wait(std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff710b50a in rex::system::XObject::Wait(unsigned int, unsigned int, unsigned int, unsigned long*) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff72592d2 in rex::kernel::xboxkrnl::NtWaitForSingleObjectEx_entry(unsigned int, unsigned int, unsigned int, rex::MappedPtr<rex::endian_store<unsigned long, (std::endian)4321> >) () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff7761b0f in _ZN3rex3ppc19HostToGuestFunctionITnDaXadL_ZNS_6kernel8xboxkrnl29NtWaitForSingleObjectEx_entryEjjjNS_9MappedPtrINS_12endian_storeImLSt6endian4321EEEEEEEEEvR10PPCContextPh () from /tmp/narutobb/build/librexruntime.so
+
+Thread 20 (Thread 0x7fff7bfff640 (LWP 37) "XThread7BFFF640"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff768c6db in rex::thread::PosixConditionBase::Wait(std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff710b50a in rex::system::XObject::Wait(unsigned int, unsigned int, unsigned int, unsigned long*) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff72592d2 in rex::kernel::xboxkrnl::NtWaitForSingleObjectEx_entry(unsigned int, unsigned int, unsigned int, rex::MappedPtr<rex::endian_store<unsigned long, (std::endian)4321> >) () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff7761b0f in _ZN3rex3ppc19HostToGuestFunctionITnDaXadL_ZNS_6kernel8xboxkrnl29NtWaitForSingleObjectEx_entryEjjjNS_9MappedPtrINS_12endian_storeImLSt6endian4321EEEEEEEEEvR10PPCContextPh () from /tmp/narutobb/build/librexruntime.so
+
+Thread 19 (Thread 0x7fff897fa640 (LWP 36) "XThread897FA640"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff768c6db in rex::thread::PosixConditionBase::Wait(std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff710b50a in rex::system::XObject::Wait(unsigned int, unsigned int, unsigned int, unsigned long*) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff72592d2 in rex::kernel::xboxkrnl::NtWaitForSingleObjectEx_entry(unsigned int, unsigned int, unsigned int, rex::MappedPtr<rex::endian_store<unsigned long, (std::endian)4321> >) () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff7761b0f in _ZN3rex3ppc19HostToGuestFunctionITnDaXadL_ZNS_6kernel8xboxkrnl29NtWaitForSingleObjectEx_entryEjjjNS_9MappedPtrINS_12endian_storeImLSt6endian4321EEEEEEEEEvR10PPCContextPh () from /tmp/narutobb/build/librexruntime.so
+
+Thread 18 (Thread 0x7fff8a7fb640 (LWP 35) "XThread8A7FB640"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff768c6db in rex::thread::PosixConditionBase::Wait(std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff710b50a in rex::system::XObject::Wait(unsigned int, unsigned int, unsigned int, unsigned long*) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff72592d2 in rex::kernel::xboxkrnl::NtWaitForSingleObjectEx_entry(unsigned int, unsigned int, unsigned int, rex::MappedPtr<rex::endian_store<unsigned long, (std::endian)4321> >) () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff7761b0f in _ZN3rex3ppc19HostToGuestFunctionITnDaXadL_ZNS_6kernel8xboxkrnl29NtWaitForSingleObjectEx_entryEjjjNS_9MappedPtrINS_12endian_storeImLSt6endian4321EEEEEEEEEvR10PPCContextPh () from /tmp/narutobb/build/librexruntime.so
+
+Thread 17 (Thread 0x7fff8affc640 (LWP 34) "narutobb"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff768c6db in rex::thread::PosixConditionBase::Wait(std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff710b50a in rex::system::XObject::Wait(unsigned int, unsigned int, unsigned int, unsigned long*) () from /tmp/narutobb/build/librexruntime.so
+#4  0x0000555558494ef8 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<rex::ReXApp::LaunchModule()::$_0::operator()() const::{lambda()#1}> > >::_M_run() ()
+#5  0x00007ffff6dc3cb4 in execute_native_thread_routine () from /tmp/narutobb/build/librexruntime.so
+
+Thread 16 (Thread 0x7fffb45fa640 (LWP 33) "Vulkan Storage "):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff6f2d467 in rex::graphics::vulkan::VulkanPipelineCache::StorageWriteThread() () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff6e3a8df in rex::thread::PosixCondition<rex::thread::Thread>::ThreadStartRoutine(void*) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff5894ac3 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#5  0x00007ffff59268d0 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+
+Thread 15 (Thread 0x7fffbc7d6640 (LWP 32) "Vulkan Pipeline"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff6f2cff3 in rex::graphics::vulkan::VulkanPipelineCache::CreationThread(unsigned long) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff6e3a8df in rex::thread::PosixCondition<rex::thread::Thread>::ThreadStartRoutine(void*) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff5894ac3 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#5  0x00007ffff59268d0 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+
+Thread 14 (Thread 0x7fff8bffd640 (LWP 31) "Main XThread (F"):
+#0  0x000055555592befe in sub_8217AB20 ()
+#1  0x00005555558af0b8 in sub_8215AA00 ()
+#2  0x00005555558aceab in sub_8215A3F8 ()
+#3  0x0000555555893e82 in sub_821539C8 ()
+#4  0x00005555581a55f5 in sub_82BB9C70 ()
+#5  0x0000555558200d2e in sub_82BD09D8 ()
+
+Thread 13 (Thread 0x7fffb55fb640 (LWP 30) "Kernel Dispatch"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff7709763 in void std::_V2::condition_variable_any::wait<std::unique_lock<std::recursive_mutex> >(std::unique_lock<std::recursive_mutex>&) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff70eadd9 in std::_Function_handler<int (), rex::system::KernelState::SetExecutableModule(rex::system::object_ref<rex::system::UserModule>)::$_0>::_M_invoke(std::_Any_data const&) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff7103ea5 in rex::system::XHostThread::Execute() () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff710442d in std::_Function_handler<void (), rex::system::XThread::Create()::$_0>::_M_invoke(std::_Any_data const&) () from /tmp/narutobb/build/librexruntime.so
+
+Thread 12 (Thread 0x7fffb6ffe640 (LWP 29) "GPU VSync (F800"):
+#0  0x00007ffff58e57f8 in clock_nanosleep () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff58ea677 in nanosleep () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff6e38d0c in rex::thread::Sleep(std::chrono::duration<long, std::ratio<1l, 1000000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff6e64d99 in std::_Function_handler<int (), rex::graphics::GraphicsSystem::SetupGuestGpu(rex::runtime::FunctionDispatcher*, rex::system::KernelState*)::$_0>::_M_invoke(std::_Any_data const&) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff7103ea5 in rex::system::XHostThread::Execute() () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff710442d in std::_Function_handler<void (), rex::system::XThread::Create()::$_0>::_M_invoke(std::_Any_data const&) () from /tmp/narutobb/build/librexruntime.so
+
+Thread 11 (Thread 0x7fffb7fff640 (LWP 28) "GPU Commands (F"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff58942dd in pthread_cond_clockwait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff768c790 in rex::thread::PosixConditionBase::Wait(std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff6e39949 in rex::thread::Wait(rex::thread::WaitHandle*, bool, std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff6e66fde in rex::graphics::CommandProcessor::WorkerThreadMain() () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff6e6db55 in std::_Function_handler<int (), rex::graphics::CommandProcessor::Initialize()::$_0>::_M_invoke(std::_Any_data const&) () from /tmp/narutobb/build/librexruntime.so
+
+Thread 10 (Thread 0x7fffbd8d8640 (LWP 27) "Audio Worker (F"):
+#0  0x00007ffff58e57f8 in clock_nanosleep () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff58ea677 in nanosleep () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff6e38d0c in rex::thread::Sleep(std::chrono::duration<long, std::ratio<1l, 1000000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff6fcbef1 in rex::audio::AudioSystem::WorkerThreadMain() () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff6fcda05 in std::_Function_handler<int (), rex::audio::AudioSystem::Setup(rex::system::KernelState*)::$_0>::_M_invoke(std::_Any_data const&) () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff7103ea5 in rex::system::XHostThread::Execute() () from /tmp/narutobb/build/librexruntime.so
+
+Thread 9 (Thread 0x7fffbe8d9640 (LWP 26) "XMA Decoder (F8"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff768c6db in rex::thread::PosixConditionBase::Wait(std::chrono::duration<long, std::ratio<1l, 1000l> >) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff6fd1652 in rex::audio::XmaDecoder::WorkerThreadMain() () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff6fd25b5 in std::_Function_handler<int (), rex::audio::XmaDecoder::Setup(rex::system::KernelState*)::$_0>::_M_invoke(std::_Any_data const&) () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff7103ea5 in rex::system::XHostThread::Execute() () from /tmp/narutobb/build/librexruntime.so
+
+Thread 8 (Thread 0x7fffe15fa640 (LWP 25) "narutob:disk$0"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007fffe3ef98dd in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#3  0x00007fffe3e9c22b in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#4  0x00007fffe3ef980b in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#5  0x00007ffff5894ac3 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+
+Thread 7 (Thread 0x7fffe1dfb640 (LWP 24) "narutobb"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007fffe3ef98dd in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#3  0x00007fffe40bcf13 in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#4  0x00007fffe3ef980b in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#5  0x00007ffff5894ac3 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+
+Thread 6 (Thread 0x7fffe25fc640 (LWP 23) "narutobb"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007fffe3ef98dd in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#3  0x00007fffe40bcf13 in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#4  0x00007fffe3ef980b in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#5  0x00007ffff5894ac3 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+
+Thread 5 (Thread 0x7fffe2dfd640 (LWP 22) "llvmpipe-1"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007fffe3ef98dd in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#3  0x00007fffe40bfd23 in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#4  0x00007fffe3ef980b in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#5  0x00007ffff5894ac3 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+
+Thread 4 (Thread 0x7fffe35fe640 (LWP 21) "llvmpipe-0"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007fffe3ef98dd in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#3  0x00007fffe40bfd23 in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#4  0x00007fffe3ef980b in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#5  0x00007ffff5894ac3 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+
+Thread 3 (Thread 0x7fffe3dff640 (LWP 20) "narutobb"):
+#0  0x00007ffff5891117 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5893a41 in pthread_cond_wait () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007fffe3ef98dd in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#3  0x00007fffe3f07eb0 in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#4  0x00007fffe3ef980b in ?? () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so
+#5  0x00007ffff5894ac3 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+
+Thread 2 (Thread 0x7ffff4bcf640 (LWP 18) "narutobb"):
+#0  0x00007ffff58e57f8 in clock_nanosleep () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff58ea677 in nanosleep () from /lib/x86_64-linux-gnu/libc.so.6
+#2  0x00007ffff76887e4 in rex::thread::TimerQueue::TimerThreadMain(std::stop_token) () from /tmp/narutobb/build/librexruntime.so
+#3  0x00007ffff768825a in void std::__invoke_impl<void, rex::thread::TimerQueue::TimerQueue()::{lambda(std::stop_token)#1}, std::stop_token>(std::__invoke_other, rex::thread::TimerQueue::TimerQueue()::{lambda(std::stop_token)#1}&&, std::stop_token&&) () from /tmp/narutobb/build/librexruntime.so
+#4  0x00007ffff6dc3cb4 in execute_native_thread_routine () from /tmp/narutobb/build/librexruntime.so
+#5  0x00007ffff5894ac3 in ?? () from /lib/x86_64-linux-gnu/libc.so.6
+
+Thread 1 (Thread 0x7ffff4bd2b40 (LWP 15) "narutobb"):
+#0  0x00007ffff5918c4f in poll () from /lib/x86_64-linux-gnu/libc.so.6
+#1  0x00007ffff5c6d426 in ?? () from /lib/x86_64-linux-gnu/libglib-2.0.so.0
+#2  0x00007ffff5c172b3 in g_main_loop_run () from /lib/x86_64-linux-gnu/libglib-2.0.so.0
+#3  0x00007ffff6248d2d in gtk_main () from /tmp/work/clang-root/usr/lib/x86_64-linux-gnu/libgtk-3.so.0
+#4  0x00007ffff6f75677 in rex::ui::GTKWindowedAppContext::RunMainGTKLoop() () from /tmp/narutobb/build/librexruntime.so
+#5  0x000055555848d329 in main ()

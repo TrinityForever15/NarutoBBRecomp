@@ -1,0 +1,192 @@
+From 72371cfc2389d5dccc5602dc2c43ca75cfc7b05b Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Tue, 21 Jul 2026 16:37:47 -0300
+Subject: [PATCH 6/6] feat(trace): support headless framebuffer regression
+ replay
+
+---
+ src/graphics/trace_dump.cpp   | 88 +++++++++++++++++++++++++----------
+ src/graphics/trace_player.cpp | 10 ++++
+ src/graphics/trace_reader.cpp |  2 +-
+ 3 files changed, 75 insertions(+), 25 deletions(-)
+
+diff --git a/src/graphics/trace_dump.cpp b/src/graphics/trace_dump.cpp
+index ad46ed6..7862f41 100644
+--- a/src/graphics/trace_dump.cpp
++++ b/src/graphics/trace_dump.cpp
+@@ -19,19 +19,10 @@
+ #include <rex/string.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/thread.h>
+-#include <rex/ui/file_picker.h>
+ #include <rex/ui/presenter.h>
+-#include <rex/ui/window.h>
+ 
+-#include <stb_image_write.h"
+-
+-#define STB_IMAGE_WRITE_IMPLEMENTATION
+-#undef _CRT_SECURE_NO_WARNINGS
+-#undef _CRT_NONSTDC_NO_DEPRECATE
+-#include <stb_image_write.h"
+-
+-DEFINE_path(target_trace_file, "", "Specifies the trace file to load.", "GPU");
+-DEFINE_path(trace_dump_path, "", "Output path for dumped files.", "GPU");
++REXCVAR_DEFINE_STRING(target_trace_file, "", "GPU", "Specifies the trace file to load.");
++REXCVAR_DEFINE_STRING(trace_dump_path, "", "GPU", "Output path for dumped files.");
+ 
+ namespace rex::graphics {
+ 
+@@ -94,15 +85,24 @@ int TraceDump::Main(const std::vector<std::string>& args) {
+ }
+ 
+ bool TraceDump::Setup() {
+-  // Create the emulator but don't initialize so we can setup the window.
+-  emulator_ = std::make_unique<Emulator>("", "", "", "");
+-  X_STATUS result = emulator_->Setup(
+-      nullptr, nullptr, false, nullptr, [this]() { return CreateGraphicsSystem(); }, nullptr);
++  // The trace dumper is headless, but it still needs an offscreen presenter so
++  // CaptureGuestOutput can read back the frame produced by the swap packet.
++  auto graphics_system = CreateGraphicsSystem();
++  X_STATUS result = graphics_system->SetupPresentation(nullptr);
++  if (XFAILED(result)) {
++    REXGPU_ERROR("Failed to set up offscreen presentation: {:08X}", result);
++    return false;
++  }
++
++  RuntimeConfig config;
++  config.graphics = std::move(graphics_system);
++  emulator_ = std::make_unique<Runtime>("", "", "", "");
++  result = emulator_->Setup(std::move(config));
+   if (XFAILED(result)) {
+     REXGPU_ERROR("Failed to setup emulator: {:08X}", result);
+     return false;
+   }
+-  graphics_system_ = emulator_->graphics_system();
++  graphics_system_ = static_cast<GraphicsSystem*>(emulator_->graphics_system());
+   player_ = std::make_unique<TracePlayer>(graphics_system_);
+   return true;
+ }
+@@ -130,16 +130,56 @@ int TraceDump::Run() {
+   ui::Presenter* presenter = graphics_system_->presenter();
+   ui::RawImage raw_image;
+   if (presenter && presenter->CaptureGuestOutput(raw_image)) {
+-    // Save framebuffer png.
+-    auto png_path = base_output_path_.replace_extension(".png");
+-    auto handle = filesystem::OpenFile(png_path, "wb");
+-    auto callback = [](void* context, void* data, int size) {
+-      fwrite(data, 1, size, (FILE*)context);
++    // Save a self-contained 32-bit BMP. RawImage is R8G8B8X8, while BMP rows
++    // are bottom-up and store pixels as B8G8R8A8.
++    auto bmp_path = base_output_path_.replace_extension(".bmp");
++    auto handle = filesystem::OpenFile(bmp_path, "wb");
++    auto write_u16 = [handle](uint16_t value) {
++      uint8_t bytes[] = {uint8_t(value), uint8_t(value >> 8)};
++      fwrite(bytes, 1, sizeof(bytes), handle);
+     };
+-    stbi_write_png_to_func(callback, handle, static_cast<int>(raw_image.width),
+-                           static_cast<int>(raw_image.height), 4, raw_image.data.data(),
+-                           static_cast<int>(raw_image.stride));
++    auto write_u32 = [handle](uint32_t value) {
++      uint8_t bytes[] = {uint8_t(value), uint8_t(value >> 8), uint8_t(value >> 16),
++                         uint8_t(value >> 24)};
++      fwrite(bytes, 1, sizeof(bytes), handle);
++    };
++    const uint32_t image_size = raw_image.width * raw_image.height * 4;
++    fwrite("BM", 1, 2, handle);
++    write_u32(54 + image_size);
++    write_u16(0);
++    write_u16(0);
++    write_u32(54);
++    write_u32(40);
++    write_u32(raw_image.width);
++    write_u32(raw_image.height);
++    write_u16(1);
++    write_u16(32);
++    write_u32(0);
++    write_u32(image_size);
++    write_u32(2835);
++    write_u32(2835);
++    write_u32(0);
++    write_u32(0);
++    uint64_t rgb_sum = 0;
++    uint64_t nonblack_pixels = 0;
++    for (uint32_t y = raw_image.height; y-- > 0;) {
++      const uint8_t* source = raw_image.data.data() + size_t(y) * raw_image.stride;
++      for (uint32_t x = 0; x < raw_image.width; ++x) {
++        uint8_t pixel[] = {source[x * 4 + 2], source[x * 4 + 1], source[x * 4], 255};
++        rgb_sum += uint32_t(pixel[0]) + pixel[1] + pixel[2];
++        if (pixel[0] > 8 || pixel[1] > 8 || pixel[2] > 8) {
++          ++nonblack_pixels;
++        }
++        fwrite(pixel, 1, sizeof(pixel), handle);
++      }
++    }
+     fclose(handle);
++    // Machine-readable summary for the automated draw-bisection driver: mean
++    // per-channel intensity and how many pixels are not (near-)black.
++    const uint64_t pixel_count = uint64_t(raw_image.width) * raw_image.height;
++    REXGPU_INFO("TRACE_DUMP_SUMMARY mean_rgb={:.4f} nonblack_pixels={} total_pixels={} size={}x{}",
++                pixel_count ? double(rgb_sum) / (3.0 * double(pixel_count)) : 0.0, nonblack_pixels,
++                pixel_count, raw_image.width, raw_image.height);
+   } else {
+     result = 1;
+   }
+diff --git a/src/graphics/trace_player.cpp b/src/graphics/trace_player.cpp
+index b487aff..c29171d 100644
+--- a/src/graphics/trace_player.cpp
++++ b/src/graphics/trace_player.cpp
+@@ -16,6 +16,7 @@
+ #include <rex/graphics/registers.h>
+ #include <rex/graphics/trace_player.h>
+ #include <rex/graphics/xenos.h>
++#include <rex/logging.h>
+ #include <rex/memory.h>
+ 
+ namespace rex::graphics {
+@@ -96,6 +97,9 @@ void TracePlayer::PlayTraceOnThread(const uint8_t* trace_data, size_t trace_size
+ 
+   if (clear_caches) {
+     command_processor->ClearCaches();
++    // Keep draw-bisection indices deterministic: every full playback restarts
++    // the TRACE_DRAW counter from zero (incremental seeks keep counting).
++    command_processor->ResetTraceDrawCounter();
+   }
+ 
+   playback_percent_ = 0;
+@@ -151,7 +155,10 @@ void TracePlayer::PlayTraceOnThread(const uint8_t* trace_data, size_t trace_size
+           pending_packet = nullptr;
+         }
+         if (pending_break) {
++          REXGPU_INFO("TRACE_DRAW playback stopped at swap, total draw candidates={}",
++                      command_processor->trace_draw_index());
+           playing_trace_ = false;
++          playback_event_->Set();
+           return;
+         }
+         break;
+@@ -223,6 +230,9 @@ void TracePlayer::PlayTraceOnThread(const uint8_t* trace_data, size_t trace_size
+     }
+   }
+ 
++  REXGPU_INFO("TRACE_DRAW playback finished, total draw candidates={}",
++              command_processor->trace_draw_index());
++
+   playing_trace_ = false;
+ 
+   playback_event_->Set();
+diff --git a/src/graphics/trace_reader.cpp b/src/graphics/trace_reader.cpp
+index 86eb1b3..98c04ea 100644
+--- a/src/graphics/trace_reader.cpp
++++ b/src/graphics/trace_reader.cpp
+@@ -21,7 +21,7 @@
+ #include <rex/memory/mapped_memory.h>
+ #include <rex/platform.h>
+ 
+-#include <snappy.h"
++#include <snappy.h>
+ 
+ namespace rex::graphics {
+ 
+-- 
+2.53.0.windows.3
+

@@ -1,0 +1,77 @@
+# Proprietary game content — never commit or distribute
+*.iso
+*.xex
+*.bik
+*.SRA
+*.sra
+*.bf
+*.sdb
+*.xzp
+*.xvu
+*.xvd
+*.stfs
+*.sav
+AUDIO_TS/
+VIDEO_TS/
+recomp/fase4/assets/
+
+# Proprietary-derived or sensitive research kept only on the local machine
+local-research/
+recomp/fase4/evidencias/
+recomp/fase4/traces/
+recomp/shaders_hlsl_8156.tar.gz
+recomp/shaders_src_originais.tar.gz
+recomp/basefile.bin
+recomp/ppc/
+
+# Generated guest code and local SDK checkouts
+native/narutobb/generated/default/
+native/narutobb/out/
+tooling/rexglue-sdk/
+tooling/rexglue-sdk-*/
+tooling/*.zip
+tooling/*.exe
+
+# Build products, logs, captures, caches, and temporary output
+artifacts/
+tmp/
+.agents/
+__pycache__/
+*.pyc
+*.pyo
+*.exe
+*.dll
+*.pdb
+*.lib
+*.exp
+*.obj
+*.o
+*.log
+*.status
+*.xtr
+*.bmp
+*.dmp
+*.csv
+*.tar
+*.tar.gz
+*.zip
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Editors and operating systems
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.user
+*.suo
+*~

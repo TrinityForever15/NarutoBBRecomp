@@ -1,0 +1,204 @@
+From 7e7b654f9a69932aa567722c176b96cba3a59f3a Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Wed, 22 Jul 2026 23:33:56 -0300
+Subject: [PATCH 11/11] feat(audio): summarize upstream silence without
+ realtime logging
+
+---
+ include/rex/audio/sdl/sdl_audio_driver.h | 12 +++
+ src/audio/sdl/sdl_audio_driver.cpp       | 95 ++++++++++++++++++------
+ 2 files changed, 86 insertions(+), 21 deletions(-)
+
+diff --git a/include/rex/audio/sdl/sdl_audio_driver.h b/include/rex/audio/sdl/sdl_audio_driver.h
+index 6947790..60903b7 100644
+--- a/include/rex/audio/sdl/sdl_audio_driver.h
++++ b/include/rex/audio/sdl/sdl_audio_driver.h
+@@ -36,6 +36,8 @@ class SDLAudioDriver : public AudioDriver {
+  protected:
+   static void SDLCallback(void* userdata, SDL_AudioStream* stream, int additional_amount,
+                           int total_amount);
++  void AccumulateInputDiagnostics(const float* input);
++  void LogInputDiagnosticsSummary();
+ 
+   rex::thread::Semaphore* semaphore_ = nullptr;
+ 
+@@ -52,6 +54,16 @@ class SDLAudioDriver : public AudioDriver {
+   std::stack<float*> frames_unused_ = {};
+   std::mutex frames_mutex_ = {};
+ 
++  // Optional diagnostics accumulated without logging or allocation in the
++  // real-time callback. The summary is emitted only after SDL has stopped the
++  // callback during Shutdown().
++  uint64_t diagnostic_frame_count_ = 0;
++  uint64_t diagnostic_silent_frame_count_ = 0;
++  uint64_t diagnostic_current_silent_run_ = 0;
++  uint64_t diagnostic_max_silent_run_ = 0;
++  std::array<uint64_t, frame_channels_> diagnostic_active_channel_frames_ = {};
++  std::array<float, frame_channels_> diagnostic_channel_peaks_ = {};
++
+   // Underrun concealment. Hard-cutting to zero (and back) at a frame boundary
+   // is a step discontinuity in the waveform, which is exactly what is heard as
+   // a click/crackle. We instead ramp out from the last emitted sample and ramp
+diff --git a/src/audio/sdl/sdl_audio_driver.cpp b/src/audio/sdl/sdl_audio_driver.cpp
+index 1de9235..047cdb8 100644
+--- a/src/audio/sdl/sdl_audio_driver.cpp
++++ b/src/audio/sdl/sdl_audio_driver.cpp
+@@ -29,6 +29,8 @@
+ REXCVAR_DEFINE_BOOL(audio_mute, false, "Audio", "Mute audio output");
+ REXCVAR_DEFINE_BOOL(audio_stereo_front_only, false, "Audio",
+                     "Use front and center channels only on stereo devices");
++REXCVAR_DEFINE_BOOL(audio_silence_diagnostics, false, "Audio",
++                    "Summarize silent guest frames when audio shuts down");
+ REXCVAR_DEFINE_BOOL(audio_output_limiter, true, "Audio",
+                     "Sanitize invalid samples and softly limit output peaks");
+ 
+@@ -56,9 +58,7 @@ void ProtectOutputSamples(float* samples, size_t sample_count) {
+     if (magnitude > kKnee) {
+       // Continuous soft knee: y(0.95) = 0.95 and y approaches 1.0 without
+       // hard clipping, which avoids the strong crackle of effect transients.
+-      const float limited_magnitude =
+-          1.0f - kHeadroom /
+-                     (1.0f + (magnitude - kKnee) / kHeadroom);
++      const float limited_magnitude = 1.0f - kHeadroom / (1.0f + (magnitude - kKnee) / kHeadroom);
+       samples[i] = std::copysign(limited_magnitude, sample);
+       ++limited_count;
+     }
+@@ -67,16 +67,13 @@ void ProtectOutputSamples(float* samples, size_t sample_count) {
+   if (non_finite_count || input_peak > 1.05f) {
+     static std::atomic<uint64_t> last_peak_log_tick{0};
+     const uint64_t now_tick = rex::chrono::Clock::QueryHostTickCount();
+-    const uint64_t tick_frequency =
+-        rex::chrono::Clock::QueryHostTickFrequency();
+-    uint64_t previous_tick =
+-        last_peak_log_tick.load(std::memory_order_relaxed);
++    const uint64_t tick_frequency = rex::chrono::Clock::QueryHostTickFrequency();
++    uint64_t previous_tick = last_peak_log_tick.load(std::memory_order_relaxed);
+     if ((!previous_tick || now_tick - previous_tick >= tick_frequency) &&
+-        last_peak_log_tick.compare_exchange_strong(
+-            previous_tick, now_tick, std::memory_order_relaxed)) {
+-      REXAPU_WARN(
+-          "NARUTO_AUDIO_PEAK peak={:.3f} limited_samples={} invalid_samples={}",
+-          input_peak, limited_count, non_finite_count);
++        last_peak_log_tick.compare_exchange_strong(previous_tick, now_tick,
++                                                   std::memory_order_relaxed)) {
++      REXAPU_WARN("NARUTO_AUDIO_PEAK peak={:.3f} limited_samples={} invalid_samples={}", input_peak,
++                  limited_count, non_finite_count);
+     }
+   }
+ }
+@@ -199,6 +196,7 @@ void SDLAudioDriver::Shutdown() {
+     SDL_DestroyAudioStream(sdl_stream_);
+     sdl_stream_ = nullptr;
+   }
++  LogInputDiagnosticsSummary();
+   if (sdl_initialized_) {
+     SDL_QuitSubSystem(SDL_INIT_AUDIO);
+     sdl_initialized_ = false;
+@@ -214,6 +212,63 @@ void SDLAudioDriver::Shutdown() {
+   }
+ }
+ 
++void SDLAudioDriver::AccumulateInputDiagnostics(const float* input) {
++  if (!REXCVAR_GET(audio_silence_diagnostics)) {
++    return;
++  }
++
++  bool frame_has_signal = false;
++  for (size_t channel = 0; channel < frame_channels_; ++channel) {
++    bool channel_has_signal = false;
++    for (size_t sample_index = 0; sample_index < channel_samples_; ++sample_index) {
++      const float sample = rex::byte_swap(input[channel * channel_samples_ + sample_index]);
++      if (!std::isfinite(sample)) {
++        continue;
++      }
++      const float magnitude = std::abs(sample);
++      diagnostic_channel_peaks_[channel] = std::max(diagnostic_channel_peaks_[channel], magnitude);
++      channel_has_signal = channel_has_signal || magnitude > 1.0e-6f;
++    }
++    if (channel_has_signal) {
++      ++diagnostic_active_channel_frames_[channel];
++      frame_has_signal = true;
++    }
++  }
++
++  ++diagnostic_frame_count_;
++  if (frame_has_signal) {
++    diagnostic_current_silent_run_ = 0;
++  } else {
++    ++diagnostic_silent_frame_count_;
++    ++diagnostic_current_silent_run_;
++    diagnostic_max_silent_run_ =
++        std::max(diagnostic_max_silent_run_, diagnostic_current_silent_run_);
++  }
++}
++
++void SDLAudioDriver::LogInputDiagnosticsSummary() {
++  if (!REXCVAR_GET(audio_silence_diagnostics) || !diagnostic_frame_count_) {
++    return;
++  }
++
++  constexpr double kFrameDurationMs =
++      1000.0 * static_cast<double>(channel_samples_) / frame_frequency_;
++  REXAPU_INFO(
++      "NARUTO_AUDIO_SILENCE_SUMMARY frames={} silent_frames={} "
++      "silent_percent={:.2f} max_silent_frames={} max_silent_ms={:.2f} "
++      "active_frames=[{},{},{},{},{},{}] "
++      "peak=[{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f}] "
++      "order=FL,FR,FC,LFE,BL,BR",
++      diagnostic_frame_count_, diagnostic_silent_frame_count_,
++      100.0 * static_cast<double>(diagnostic_silent_frame_count_) / diagnostic_frame_count_,
++      diagnostic_max_silent_run_, diagnostic_max_silent_run_ * kFrameDurationMs,
++      diagnostic_active_channel_frames_[0], diagnostic_active_channel_frames_[1],
++      diagnostic_active_channel_frames_[2], diagnostic_active_channel_frames_[3],
++      diagnostic_active_channel_frames_[4], diagnostic_active_channel_frames_[5],
++      diagnostic_channel_peaks_[0], diagnostic_channel_peaks_[1], diagnostic_channel_peaks_[2],
++      diagnostic_channel_peaks_[3], diagnostic_channel_peaks_[4], diagnostic_channel_peaks_[5]);
++}
++
+ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int additional_amount,
+                                  [[maybe_unused]] int total_amount) {
+   SCOPE_profile_cpu_f("apu");
+@@ -237,9 +292,8 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+     // After a gap, wait for a small cushion to rebuild before resuming. Handing
+     // out a single frame the instant one arrives guarantees the next callback
+     // underruns again, which is what turns one stall into a burst of clicks.
+-    const bool starved =
+-        driver->frames_queued_.empty() ||
+-        (driver->in_underrun_ && driver->frames_queued_.size() < kRefillFrames);
++    const bool starved = driver->frames_queued_.empty() ||
++                         (driver->in_underrun_ && driver->frames_queued_.size() < kRefillFrames);
+     if (starved) {
+       // Keep diagnostics out of the normal audio path. On underrun, emit at
+       // most one marker per second so a cutscene test can be correlated with
+@@ -249,8 +303,8 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+       const uint64_t tick_frequency = rex::chrono::Clock::QueryHostTickFrequency();
+       uint64_t previous_tick = last_underrun_log_tick.load(std::memory_order_relaxed);
+       if ((!previous_tick || now_tick - previous_tick >= tick_frequency) &&
+-          last_underrun_log_tick.compare_exchange_strong(
+-              previous_tick, now_tick, std::memory_order_relaxed)) {
++          last_underrun_log_tick.compare_exchange_strong(previous_tick, now_tick,
++                                                         std::memory_order_relaxed)) {
+         REXAPU_WARN("NARUTO_AUDIO_UNDERRUN requested_bytes={}", additional_amount);
+       }
+       if (sdl_callback_count < 10) {
+@@ -282,14 +336,13 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+       if (REXCVAR_GET(audio_mute)) {
+         std::memset(data, 0, len);
+       } else {
++        driver->AccumulateInputDiagnostics(buffer);
+         switch (driver->sdl_device_channels_) {
+           case 2:
+             if (REXCVAR_GET(audio_stereo_front_only)) {
+-              conversion::sequential_6_BE_to_interleaved_2_front_LE(
+-                  data, buffer, channel_samples_);
++              conversion::sequential_6_BE_to_interleaved_2_front_LE(data, buffer, channel_samples_);
+             } else {
+-              conversion::sequential_6_BE_to_interleaved_2_LE(
+-                  data, buffer, channel_samples_);
++              conversion::sequential_6_BE_to_interleaved_2_LE(data, buffer, channel_samples_);
+             }
+             break;
+           case 6:
+-- 
+2.55.0.windows.3
+

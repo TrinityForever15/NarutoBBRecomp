@@ -1,0 +1,685 @@
+From c91f2b53a1018b779ed3b5d9d201412719cb73ca Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Thu, 23 Jul 2026 01:08:10 -0300
+Subject: [PATCH 12/12] feat(diagnostics): trace guest frame timing
+
+---
+ include/rex/diagnostics/guest_timing.h     |  74 ++++++
+ resources/templates/codegen/init_h.inja    |   4 +-
+ resources/templates/test/ppc_config_h.inja |   3 +-
+ src/codegen/builders/system.cpp            |   6 +-
+ src/graphics/graphics_system.cpp           |   3 +
+ src/kernel/xboxkrnl/xboxkrnl_video.cpp     |   3 +
+ src/system/CMakeLists.txt                  |   1 +
+ src/system/guest_timing.cpp                | 292 +++++++++++++++++++++
+ src/system/xobject.cpp                     |  38 +++
+ src/system/xthread.cpp                     |  23 ++
+ src/ui/window_win.cpp                      |  13 +
+ 11 files changed, 455 insertions(+), 5 deletions(-)
+ create mode 100644 include/rex/diagnostics/guest_timing.h
+ create mode 100644 src/system/guest_timing.cpp
+
+diff --git a/include/rex/diagnostics/guest_timing.h b/include/rex/diagnostics/guest_timing.h
+new file mode 100644
+index 0000000..f66b8f5
+--- /dev/null
++++ b/include/rex/diagnostics/guest_timing.h
+@@ -0,0 +1,74 @@
++#pragma once
++
++#include <array>
++#include <cstddef>
++#include <cstdint>
++
++namespace rex::diagnostics {
++
++enum class GuestWaitKind : uint32_t {
++  kObject = 0,
++  kMultiple = 1,
++  kSignalAndWait = 2,
++  kDelay = 3,
++  kCount,
++};
++
++constexpr size_t kGuestWaitKindCount =
++    static_cast<size_t>(GuestWaitKind::kCount);
++constexpr size_t kMaxGuestTimeSourceSites = 32;
++
++struct GuestTimeSourceSite {
++  uint32_t guest_pc = 0;
++  uint32_t calls = 0;
++};
++
++struct GuestTimingSample {
++  bool valid = false;
++  uint64_t sequence = 0;
++  uint32_t scope_tag = 0;
++  uint32_t thread_id = 0;
++
++  uint64_t wall_ns = 0;
++  uint64_t cpu_ns = 0;
++  uint64_t blocked_ns = 0;
++  std::array<uint64_t, kGuestWaitKindCount> wait_ns{};
++  std::array<uint32_t, kGuestWaitKindCount> wait_calls{};
++
++  uint64_t longest_wait_ns = 0;
++  uint32_t longest_wait_object = 0;
++  uint32_t longest_wait_object_type = 0;
++  GuestWaitKind longest_wait_kind = GuestWaitKind::kObject;
++
++  uint32_t vblank_pulses = 0;
++  uint32_t vd_swap_calls = 0;
++  uint32_t timebase_reads = 0;
++  std::array<GuestTimeSourceSite, kMaxGuestTimeSourceSites>
++      time_source_sites{};
++  size_t time_source_site_count = 0;
++};
++
++void SetGuestTimingTraceEnabled(bool enabled);
++bool GuestTimingTraceEnabled();
++
++// Frame timing is associated with the first guest thread that calls Begin
++// after tracing is enabled. Calls from other guest threads are ignored.
++void BeginGuestFrameTiming(uint64_t sequence);
++GuestTimingSample EndGuestFrameTiming();
++
++// Scopes are thread-local and are useful for proving whether a particular
++// guest function is active or blocked internally.
++void BeginGuestTimingScope(uint32_t scope_tag);
++GuestTimingSample EndGuestTimingScope(uint32_t scope_tag);
++
++void RecordGuestWait(GuestWaitKind kind, uint32_t object_type,
++                     uint32_t guest_object, uint64_t duration_ns);
++void RecordGuestVblankPulse();
++void RecordGuestVdSwap();
++void RecordGuestTimebaseRead(uint32_t guest_pc);
++
++// Code generated for mftb/mftbu calls this wrapper so active time sources can
++// be attributed to their exact guest instruction without changing the XEX.
++uint64_t QueryGuestTimebase(uint32_t guest_pc);
++
++}  // namespace rex::diagnostics
+diff --git a/resources/templates/codegen/init_h.inja b/resources/templates/codegen/init_h.inja
+index 8449a0b..b53c871 100644
+--- a/resources/templates/codegen/init_h.inja
++++ b/resources/templates/codegen/init_h.inja
+@@ -33,6 +33,7 @@
+ #include <rex/image_info.h>
+ #include <rex/logging.h>
+ #include <rex/chrono/clock.h>
++#include <rex/diagnostics/guest_timing.h>
+ #include <rex/perf/counter.h>
+ #include <rex/thread/mutex.h>
+ #include <rex/system/mmio_handler.h>
+@@ -238,7 +239,8 @@ extern PPCFuncMapping PPCFuncMappings[];
+ #define REX_UNIMPLEMENTED(addr, opcode) \
+   throw std::runtime_error("Unimplemented PPC instruction: " opcode)
+ 
+-#define REX_QUERY_TIMEBASE() rex::chrono::Clock::QueryGuestTickCount()
++#define REX_QUERY_TIMEBASE(guest_pc) \
++  rex::diagnostics::QueryGuestTimebase(guest_pc)
+ 
+ //=============================================================================
+ // Setjmp/Longjmp
+diff --git a/resources/templates/test/ppc_config_h.inja b/resources/templates/test/ppc_config_h.inja
+index f2c2d62..a9aa2ab 100644
+--- a/resources/templates/test/ppc_config_h.inja
++++ b/resources/templates/test/ppc_config_h.inja
+@@ -104,7 +104,7 @@
+ #define REX_UNIMPLEMENTED(addr, opcode) \
+   throw std::runtime_error("Unimplemented PPC instruction: " opcode)
+ 
+-#define REX_QUERY_TIMEBASE() rex::chrono::Clock::QueryGuestTickCount()
++#define REX_QUERY_TIMEBASE(guest_pc) rex::chrono::Clock::QueryGuestTickCount()
+ 
+ //=============================================================================
+ // Setjmp/Longjmp
+@@ -177,4 +177,3 @@ inline std::atomic<i32>& ppc_global_lock_count_() {
+     assert(old_count_ >= 1 && "LeaveGlobalLock called without matching EnterGlobalLock"); \
+     rex::thread::global_critical_region::mutex().unlock();                                \
+   } while (0)
+-
+diff --git a/src/codegen/builders/system.cpp b/src/codegen/builders/system.cpp
+index b2d70f5..f7fa317 100644
+--- a/src/codegen/builders/system.cpp
++++ b/src/codegen/builders/system.cpp
+@@ -266,13 +266,15 @@ bool build_mffs(BuilderContext& ctx) {
+ bool build_mftb(BuilderContext& ctx) {
+   // Xbox 360 timebase runs at 50 MHz (guest tick frequency)
+   // Using REX_QUERY_TIMEBASE() macro provides properly scaled timing from the runtime
+-  ctx.println("\t{}.u64 = REX_QUERY_TIMEBASE();", ctx.r(ctx.insn.operands[0]));
++  ctx.println("\t{}.u64 = REX_QUERY_TIMEBASE(0x{:08X});",
++              ctx.r(ctx.insn.operands[0]), ctx.base);
+   return true;
+ }
+ 
+ bool build_mftbu(BuilderContext& ctx) {
+   // Upper 32 bits of timebase
+-  ctx.println("\t{}.u64 = REX_QUERY_TIMEBASE() >> 32;", ctx.r(ctx.insn.operands[0]));
++  ctx.println("\t{}.u64 = REX_QUERY_TIMEBASE(0x{:08X}) >> 32;",
++              ctx.r(ctx.insn.operands[0]), ctx.base);
+   return true;
+ }
+ 
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index 7d5ce09..e1b72a9 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -20,6 +20,7 @@
+ #include <utility>
+ 
+ #include <rex/cvar.h>
++#include <rex/diagnostics/guest_timing.h>
+ #include <rex/graphics/command_processor.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/kernel/xboxkrnl/video.h>
+@@ -369,6 +370,8 @@ void GraphicsSystem::MarkVblank() {
+   // TODO: Enable profiling once ported
+   // SCOPE_profile_cpu_f("gpu");
+ 
++  diagnostics::RecordGuestVblankPulse();
++
+   // Increment vblank counter (so the game sees us making progress).
+   if (command_processor_) {
+     command_processor_->increment_counter();
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_video.cpp b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+index 4bbd539..2783592 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_video.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+@@ -16,6 +16,7 @@
+ #include <string>
+ 
+ #include <rex/cvar.h>
++#include <rex/diagnostics/guest_timing.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/graphics_system.h>
+ #include <rex/graphics/pipeline/texture/info.h>
+@@ -433,6 +434,8 @@ void VdSwap_entry(mapped_void buffer_ptr,      // ptr into primary ringbuffer
+                   mapped_u32 frontbuffer_ptr,  // ptr to frontbuffer address
+                   mapped_u32 texture_format_ptr, mapped_u32 color_space_ptr, mapped_u32 width,
+                   mapped_u32 height) {
++  diagnostics::RecordGuestVdSwap();
++
+   // All of these parameters are REQUIRED.
+   assert(buffer_ptr);
+   assert(fetch_ptr);
+diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
+index 4c9d2e0..ccd493f 100644
+--- a/src/system/CMakeLists.txt
++++ b/src/system/CMakeLists.txt
+@@ -1,5 +1,6 @@
+ set(REXSYSTEM_SOURCES
+     runtime.cpp
++    guest_timing.cpp
+     kernel_state.cpp
+     xmemory.cpp
+     kernel_module.cpp
+diff --git a/src/system/guest_timing.cpp b/src/system/guest_timing.cpp
+new file mode 100644
+index 0000000..6963917
+--- /dev/null
++++ b/src/system/guest_timing.cpp
+@@ -0,0 +1,292 @@
++#include <rex/diagnostics/guest_timing.h>
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++
++#include <rex/chrono/clock.h>
++#include <rex/platform.h>
++#include <rex/system/xthread.h>
++
++#if REX_PLATFORM_WIN32
++#include <Windows.h>
++#else
++#include <time.h>
++#endif
++
++namespace rex::diagnostics {
++namespace {
++
++using HostClock = std::chrono::steady_clock;
++
++uint64_t QueryCurrentThreadCpuTimeNs();
++
++struct TimingState {
++  bool active = false;
++  uint64_t sequence = 0;
++  uint32_t scope_tag = 0;
++  uint32_t thread_id = 0;
++  HostClock::time_point start{};
++  uint64_t start_cpu_ns = 0;
++  uint64_t begin_vblank_count = 0;
++
++  uint64_t blocked_ns = 0;
++  std::array<uint64_t, kGuestWaitKindCount> wait_ns{};
++  std::array<uint32_t, kGuestWaitKindCount> wait_calls{};
++  uint64_t longest_wait_ns = 0;
++  uint32_t longest_wait_object = 0;
++  uint32_t longest_wait_object_type = 0;
++  GuestWaitKind longest_wait_kind = GuestWaitKind::kObject;
++  uint32_t vd_swap_calls = 0;
++  uint32_t timebase_reads = 0;
++  std::array<GuestTimeSourceSite, kMaxGuestTimeSourceSites>
++      time_source_sites{};
++  size_t time_source_site_count = 0;
++
++  void Reset(uint64_t new_sequence, uint32_t new_scope_tag,
++             uint32_t new_thread_id, uint64_t vblank_count) {
++    *this = {};
++    active = true;
++    sequence = new_sequence;
++    scope_tag = new_scope_tag;
++    thread_id = new_thread_id;
++    start = HostClock::now();
++    start_cpu_ns = QueryCurrentThreadCpuTimeNs();
++    begin_vblank_count = vblank_count;
++  }
++};
++
++std::atomic<bool> g_enabled{false};
++std::atomic<uint32_t> g_frame_thread_id{0};
++std::atomic<uint64_t> g_vblank_count{0};
++TimingState g_frame_state;
++thread_local TimingState g_scope_state;
++
++uint64_t QueryCurrentThreadCpuTimeNs() {
++#if REX_PLATFORM_WIN32
++  FILETIME creation_time;
++  FILETIME exit_time;
++  FILETIME kernel_time;
++  FILETIME user_time;
++  if (!GetThreadTimes(GetCurrentThread(), &creation_time, &exit_time,
++                      &kernel_time, &user_time)) {
++    return 0;
++  }
++
++  ULARGE_INTEGER kernel_ticks;
++  kernel_ticks.LowPart = kernel_time.dwLowDateTime;
++  kernel_ticks.HighPart = kernel_time.dwHighDateTime;
++  ULARGE_INTEGER user_ticks;
++  user_ticks.LowPart = user_time.dwLowDateTime;
++  user_ticks.HighPart = user_time.dwHighDateTime;
++  return (kernel_ticks.QuadPart + user_ticks.QuadPart) * 100;
++#else
++  timespec value;
++  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) != 0) {
++    return 0;
++  }
++  return static_cast<uint64_t>(value.tv_sec) * 1'000'000'000ull +
++         static_cast<uint64_t>(value.tv_nsec);
++#endif
++}
++
++uint32_t CurrentGuestThreadId() {
++  auto* thread = system::XThread::GetCurrentThread();
++  return thread ? thread->thread_id() : 0;
++}
++
++void AddWait(TimingState& state, GuestWaitKind kind, uint32_t object_type,
++             uint32_t guest_object, uint64_t duration_ns) {
++  if (!state.active) {
++    return;
++  }
++  const size_t index = static_cast<size_t>(kind);
++  if (index >= kGuestWaitKindCount) {
++    return;
++  }
++  state.blocked_ns += duration_ns;
++  state.wait_ns[index] += duration_ns;
++  ++state.wait_calls[index];
++  if (duration_ns > state.longest_wait_ns) {
++    state.longest_wait_ns = duration_ns;
++    state.longest_wait_object = guest_object;
++    state.longest_wait_object_type = object_type;
++    state.longest_wait_kind = kind;
++  }
++}
++
++void AddTimebaseRead(TimingState& state, uint32_t guest_pc) {
++  if (!state.active) {
++    return;
++  }
++  ++state.timebase_reads;
++  for (size_t i = 0; i < state.time_source_site_count; ++i) {
++    if (state.time_source_sites[i].guest_pc == guest_pc) {
++      ++state.time_source_sites[i].calls;
++      return;
++    }
++  }
++  if (state.time_source_site_count < state.time_source_sites.size()) {
++    auto& site = state.time_source_sites[state.time_source_site_count++];
++    site.guest_pc = guest_pc;
++    site.calls = 1;
++  }
++}
++
++GuestTimingSample FinishState(TimingState& state) {
++  GuestTimingSample sample;
++  if (!state.active) {
++    return sample;
++  }
++
++  const auto now = HostClock::now();
++  sample.valid = true;
++  sample.sequence = state.sequence;
++  sample.scope_tag = state.scope_tag;
++  sample.thread_id = state.thread_id;
++  sample.wall_ns = static_cast<uint64_t>(
++      std::chrono::duration_cast<std::chrono::nanoseconds>(now - state.start)
++          .count());
++  const uint64_t end_cpu_ns = QueryCurrentThreadCpuTimeNs();
++  sample.cpu_ns =
++      end_cpu_ns >= state.start_cpu_ns ? end_cpu_ns - state.start_cpu_ns : 0;
++  sample.blocked_ns = std::min(state.blocked_ns, sample.wall_ns);
++  sample.wait_ns = state.wait_ns;
++  sample.wait_calls = state.wait_calls;
++  sample.longest_wait_ns = state.longest_wait_ns;
++  sample.longest_wait_object = state.longest_wait_object;
++  sample.longest_wait_object_type = state.longest_wait_object_type;
++  sample.longest_wait_kind = state.longest_wait_kind;
++  sample.vblank_pulses = static_cast<uint32_t>(
++      g_vblank_count.load(std::memory_order_relaxed) -
++      state.begin_vblank_count);
++  sample.vd_swap_calls = state.vd_swap_calls;
++  sample.timebase_reads = state.timebase_reads;
++  sample.time_source_sites = state.time_source_sites;
++  sample.time_source_site_count = state.time_source_site_count;
++  state.active = false;
++  return sample;
++}
++
++bool IsFrameThread(uint32_t thread_id) {
++  return thread_id != 0 &&
++         thread_id == g_frame_thread_id.load(std::memory_order_relaxed);
++}
++
++}  // namespace
++
++void SetGuestTimingTraceEnabled(bool enabled) {
++  g_enabled.store(enabled, std::memory_order_release);
++  if (!enabled) {
++    g_frame_state.active = false;
++    g_frame_thread_id.store(0, std::memory_order_relaxed);
++  } else {
++    g_frame_state = {};
++    g_frame_thread_id.store(0, std::memory_order_relaxed);
++  }
++}
++
++bool GuestTimingTraceEnabled() {
++  return g_enabled.load(std::memory_order_acquire);
++}
++
++void BeginGuestFrameTiming(uint64_t sequence) {
++  if (!GuestTimingTraceEnabled()) {
++    return;
++  }
++  const uint32_t thread_id = CurrentGuestThreadId();
++  if (!thread_id) {
++    return;
++  }
++  uint32_t expected = 0;
++  g_frame_thread_id.compare_exchange_strong(
++      expected, thread_id, std::memory_order_relaxed);
++  if (!IsFrameThread(thread_id)) {
++    return;
++  }
++  g_frame_state.Reset(sequence, 0, thread_id,
++                      g_vblank_count.load(std::memory_order_relaxed));
++}
++
++GuestTimingSample EndGuestFrameTiming() {
++  if (!GuestTimingTraceEnabled()) {
++    return {};
++  }
++  const uint32_t thread_id = CurrentGuestThreadId();
++  if (!IsFrameThread(thread_id) || g_frame_state.thread_id != thread_id) {
++    return {};
++  }
++  return FinishState(g_frame_state);
++}
++
++void BeginGuestTimingScope(uint32_t scope_tag) {
++  if (!GuestTimingTraceEnabled()) {
++    return;
++  }
++  const uint32_t thread_id = CurrentGuestThreadId();
++  if (!thread_id || g_scope_state.active) {
++    return;
++  }
++  g_scope_state.Reset(0, scope_tag, thread_id,
++                      g_vblank_count.load(std::memory_order_relaxed));
++}
++
++GuestTimingSample EndGuestTimingScope(uint32_t scope_tag) {
++  if (!g_scope_state.active || g_scope_state.scope_tag != scope_tag) {
++    return {};
++  }
++  return FinishState(g_scope_state);
++}
++
++void RecordGuestWait(GuestWaitKind kind, uint32_t object_type,
++                     uint32_t guest_object, uint64_t duration_ns) {
++  if (!GuestTimingTraceEnabled()) {
++    return;
++  }
++  const uint32_t thread_id = CurrentGuestThreadId();
++  if (IsFrameThread(thread_id)) {
++    AddWait(g_frame_state, kind, object_type, guest_object, duration_ns);
++  }
++  if (g_scope_state.thread_id == thread_id) {
++    AddWait(g_scope_state, kind, object_type, guest_object, duration_ns);
++  }
++}
++
++void RecordGuestVblankPulse() {
++  if (GuestTimingTraceEnabled()) {
++    g_vblank_count.fetch_add(1, std::memory_order_relaxed);
++  }
++}
++
++void RecordGuestVdSwap() {
++  if (!GuestTimingTraceEnabled()) {
++    return;
++  }
++  const uint32_t thread_id = CurrentGuestThreadId();
++  if (IsFrameThread(thread_id) && g_frame_state.active) {
++    ++g_frame_state.vd_swap_calls;
++  }
++  if (g_scope_state.active && g_scope_state.thread_id == thread_id) {
++    ++g_scope_state.vd_swap_calls;
++  }
++}
++
++void RecordGuestTimebaseRead(uint32_t guest_pc) {
++  if (!GuestTimingTraceEnabled()) {
++    return;
++  }
++  const uint32_t thread_id = CurrentGuestThreadId();
++  if (IsFrameThread(thread_id)) {
++    AddTimebaseRead(g_frame_state, guest_pc);
++  }
++  if (g_scope_state.thread_id == thread_id) {
++    AddTimebaseRead(g_scope_state, guest_pc);
++  }
++}
++
++uint64_t QueryGuestTimebase(uint32_t guest_pc) {
++  RecordGuestTimebaseRead(guest_pc);
++  return chrono::Clock::QueryGuestTickCount();
++}
++
++}  // namespace rex::diagnostics
+diff --git a/src/system/xobject.cpp b/src/system/xobject.cpp
+index b328244..812cca6 100644
+--- a/src/system/xobject.cpp
++++ b/src/system/xobject.cpp
+@@ -12,6 +12,7 @@
+ #include <vector>
+ 
+ #include <rex/chrono/clock.h>
++#include <rex/diagnostics/guest_timing.h>
+ #include <rex/stream.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/util/string_utils.h>  // For TranslateAnsiStringAddress
+@@ -212,7 +213,15 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t a
+                                       TimeoutTicksToMs(*opt_timeout)))
+                                 : std::chrono::milliseconds::max();
+ 
++  const auto wait_start = std::chrono::steady_clock::now();
+   auto result = rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
++  const uint64_t wait_ns = static_cast<uint64_t>(
++      std::chrono::duration_cast<std::chrono::nanoseconds>(
++          std::chrono::steady_clock::now() - wait_start)
++          .count());
++  diagnostics::RecordGuestWait(diagnostics::GuestWaitKind::kObject,
++                               static_cast<uint32_t>(type()), guest_object(),
++                               wait_ns);
+   switch (result) {
+     case rex::thread::WaitResult::kSuccess:
+       WaitCallback();
+@@ -237,9 +246,18 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object, ui
+                                       TimeoutTicksToMs(*opt_timeout)))
+                                 : std::chrono::milliseconds::max();
+ 
++  const auto wait_start = std::chrono::steady_clock::now();
+   auto result =
+       rex::thread::SignalAndWait(signal_object->GetWaitHandle(), wait_object->GetWaitHandle(),
+                                  alertable ? true : false, timeout_ms);
++  const uint64_t wait_ns = static_cast<uint64_t>(
++      std::chrono::duration_cast<std::chrono::nanoseconds>(
++          std::chrono::steady_clock::now() - wait_start)
++          .count());
++  diagnostics::RecordGuestWait(
++      diagnostics::GuestWaitKind::kSignalAndWait,
++      static_cast<uint32_t>(wait_object->type()), wait_object->guest_object(),
++      wait_ns);
+   switch (result) {
+     case rex::thread::WaitResult::kSuccess:
+       wait_object->WaitCallback();
+@@ -271,8 +289,19 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
+                                 : std::chrono::milliseconds::max();
+ 
+   if (wait_type) {
++    const auto wait_start = std::chrono::steady_clock::now();
+     auto result =
+         rex::thread::WaitAny(std::move(wait_handles), alertable ? true : false, timeout_ms);
++    const uint64_t wait_ns = static_cast<uint64_t>(
++        std::chrono::duration_cast<std::chrono::nanoseconds>(
++            std::chrono::steady_clock::now() - wait_start)
++            .count());
++    const size_t selected_index =
++        result.second < count ? result.second : size_t{0};
++    diagnostics::RecordGuestWait(
++        diagnostics::GuestWaitKind::kMultiple,
++        count ? static_cast<uint32_t>(objects[selected_index]->type()) : 0,
++        count ? objects[selected_index]->guest_object() : 0, wait_ns);
+     switch (result.first) {
+       case rex::thread::WaitResult::kSuccess:
+         objects[result.second]->WaitCallback();
+@@ -291,8 +320,17 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
+         return X_STATUS_UNSUCCESSFUL;
+     }
+   } else {
++    const auto wait_start = std::chrono::steady_clock::now();
+     auto result =
+         rex::thread::WaitAll(std::move(wait_handles), alertable ? true : false, timeout_ms);
++    const uint64_t wait_ns = static_cast<uint64_t>(
++        std::chrono::duration_cast<std::chrono::nanoseconds>(
++            std::chrono::steady_clock::now() - wait_start)
++            .count());
++    diagnostics::RecordGuestWait(
++        diagnostics::GuestWaitKind::kMultiple,
++        count ? static_cast<uint32_t>(objects[0]->type()) : 0,
++        count ? objects[0]->guest_object() : 0, wait_ns);
+     switch (result) {
+       case rex::thread::WaitResult::kSuccess:
+         for (uint32_t i = 0; i < count; i++) {
+diff --git a/src/system/xthread.cpp b/src/system/xthread.cpp
+index db31ff4..b5b9ae6 100644
+--- a/src/system/xthread.cpp
++++ b/src/system/xthread.cpp
+@@ -18,6 +18,7 @@
+ #include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
+ #include <rex/dbg.h>
++#include <rex/diagnostics/guest_timing.h>
+ #include <rex/perf/counter.h>
+ #include <rex/literals.h>
+ #include <rex/logging.h>
+@@ -980,6 +981,7 @@ uint32_t XThread::SelfSuspend() {
+ #endif
+ 
+ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t interval) {
++  const auto wait_start = std::chrono::steady_clock::now();
+   int64_t timeout_ticks = interval;
+   uint32_t timeout_ms;
+   if (timeout_ticks > 0) {
+@@ -999,8 +1001,22 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t in
+     switch (result) {
+       default:
+       case rex::thread::SleepResult::kSuccess:
++        diagnostics::RecordGuestWait(
++            diagnostics::GuestWaitKind::kDelay,
++            static_cast<uint32_t>(XObject::Type::Thread), guest_object(),
++            static_cast<uint64_t>(
++                std::chrono::duration_cast<std::chrono::nanoseconds>(
++                    std::chrono::steady_clock::now() - wait_start)
++                    .count()));
+         return X_STATUS_SUCCESS;
+       case rex::thread::SleepResult::kAlerted:
++        diagnostics::RecordGuestWait(
++            diagnostics::GuestWaitKind::kDelay,
++            static_cast<uint32_t>(XObject::Type::Thread), guest_object(),
++            static_cast<uint64_t>(
++                std::chrono::duration_cast<std::chrono::nanoseconds>(
++                    std::chrono::steady_clock::now() - wait_start)
++                    .count()));
+         return X_STATUS_USER_APC;
+     }
+   } else {
+@@ -1015,6 +1031,13 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t in
+     }
+   }
+ 
++  diagnostics::RecordGuestWait(
++      diagnostics::GuestWaitKind::kDelay,
++      static_cast<uint32_t>(XObject::Type::Thread), guest_object(),
++      static_cast<uint64_t>(
++          std::chrono::duration_cast<std::chrono::nanoseconds>(
++              std::chrono::steady_clock::now() - wait_start)
++              .count()));
+   return X_STATUS_SUCCESS;
+ }
+ 
+diff --git a/src/ui/window_win.cpp b/src/ui/window_win.cpp
+index 09c44a3..25a5b69 100644
+--- a/src/ui/window_win.cpp
++++ b/src/ui/window_win.cpp
+@@ -972,9 +972,22 @@ bool Win32Window::HandleKeyboard(UINT message, WPARAM wParam, LPARAM lParam,
+     case WM_KEYDOWN:
+       OnKeyDown(e, destruction_receiver);
+       break;
++    case WM_SYSKEYDOWN:
++      // Windows reports an unmodified F10 as a system key because it normally
++      // activates the menu bar. Forward only that case; forwarding all system
++      // keys would make combinations such as Alt+F4 trigger ordinary binds.
++      if (wParam == VK_F10 && !e.is_alt_pressed()) {
++        OnKeyDown(e, destruction_receiver);
++      }
++      break;
+     case WM_KEYUP:
+       OnKeyUp(e, destruction_receiver);
+       break;
++    case WM_SYSKEYUP:
++      if (wParam == VK_F10 && !e.is_alt_pressed()) {
++        OnKeyUp(e, destruction_receiver);
++      }
++      break;
+     case WM_CHAR:
+       OnKeyChar(e, destruction_receiver);
+       break;
+-- 
+2.55.0.windows.3

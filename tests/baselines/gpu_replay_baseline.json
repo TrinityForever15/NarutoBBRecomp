@@ -1,0 +1,14 @@
+[
+  { "trace": "55530825_3550.xtr", "mean_rgb": 3.7178, "nonblack_pixels": 221006 },
+  { "trace": "55530825_3819.xtr", "mean_rgb": 45.9316, "nonblack_pixels": 916470 },
+  { "trace": "55530825_4756.xtr", "mean_rgb": 38.3668, "nonblack_pixels": 904610 },
+  { "trace": "55530825_4804.xtr", "mean_rgb": 38.4979, "nonblack_pixels": 904485 },
+  { "trace": "55530825_5582.xtr", "mean_rgb": 10.2463, "nonblack_pixels": 494877 },
+  { "trace": "55530825_5935.xtr", "mean_rgb": 1.9917, "nonblack_pixels": 30830 },
+  { "trace": "55530825_6013.xtr", "mean_rgb": 1.3739, "nonblack_pixels": 17880 },
+  { "trace": "55530825_6136.xtr", "mean_rgb": 26.2694, "nonblack_pixels": 768151 },
+  { "trace": "55530825_6441.xtr", "mean_rgb": 23.6536, "nonblack_pixels": 885129 },
+  { "trace": "55530825_6621.xtr", "mean_rgb": 38.6117, "nonblack_pixels": 921600 },
+  { "trace": "55530825_7168.xtr", "mean_rgb": 82.9900, "nonblack_pixels": 907553 },
+  { "trace": "55530825_7617.xtr", "mean_rgb": 62.6010, "nonblack_pixels": 919231 }
+]
