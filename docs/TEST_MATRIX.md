@@ -18,7 +18,8 @@ without sufficient observation; **FAIL** means the defect was reproduced;
 | BUILD-01 | Clean Release build | **PASS** | Independent build provenance and hashes recorded locally |
 | REG-01 | Invariants, 30 s boot, 12 GPU replays | **PASS** | 12/12 baseline traces at zero numerical delta |
 | SAVE-01 | Save, restart, and load | **PENDING** | No complete recorded scenario |
-| PUB-01 | Public tree contains no prohibited game content | **PASS by automated audit** | Invariant script checks tracked names/extensions, large files, and known secret patterns |
+| PUB-01 | Public tree contains no prohibited game content | **PASS by automated audit** | Local invariant and GitHub Actions passed for public commit `765fa82562a5c1f6085ef0f2b22bccad333c642e`; checks tracked names/extensions, large files, and known secret patterns |
+| PUB-02 | Public `main` matches the sanitized local tree | **PASS** | Local and `origin/main` tree IDs both `80016b3c78dbeb0d124933dfef3380e477e85031`; only `main` is published |
 
 ## Guest CPU and story
 

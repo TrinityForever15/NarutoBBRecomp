@@ -24,6 +24,15 @@ menus, battles, physics, animation, or cutscenes.
 
 No build or game data is distributed through the public repository.
 
+## Public repository
+
+The sanitized public tree is available at
+<https://github.com/TrinityForever15/NarutoBBRecomp>. The `main` branch was
+published on 2026-07-23 from a new root commit so proprietary artifacts from
+the former local history are not reachable from the public repository. The
+public-content workflow passed for commit
+`765fa82562a5c1f6085ef0f2b22bccad333c642e`.
+
 ## Verified capabilities
 
 - Native Windows x64 build with Clang, CMake, and Ninja.
