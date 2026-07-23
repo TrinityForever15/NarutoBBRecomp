@@ -1,7 +1,8 @@
 # Naruto: The Broken Bond — native PC recompilation
 
-An experimental static recompilation project that runs the Xbox 360 version of
-*Naruto: The Broken Bond* as a native Windows application using ReXGlue.
+Experimental research project for statically recompiling *Naruto: The Broken
+Bond* through ReXGlue. It currently boots into portions of gameplay on Windows,
+but it is not yet validated for a complete playthrough.
 
 > [!IMPORTANT]
 > This repository contains **no game files, executables, video, audio, fonts,
