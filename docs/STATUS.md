@@ -11,6 +11,20 @@ Run *Naruto: The Broken Bond* natively on Windows with enough stability to
 complete Story Mode, correct audio, and a 60 FPS open world without breaking
 menus, battles, physics, animation, or cutscenes.
 
+## Maturity classification
+
+**Research preview.** The native build reaches portions of gameplay, but no
+complete campaign or other extensive continuous sequence has been validated.
+The project must not be presented as a usable PC port until that threshold is
+met and recorded in the test matrix.
+
+No unaffiliated third party has independently verified the runtime claims. The
+GitHub-hosted public-content workflow is independently reproducible, while the
+current build, gameplay, graphics, audio, and timing results are maintainer-run
+local observations. The project has also used AI coding agents heavily for
+documentation, hypotheses, implementation, review, and automation; AI output is
+not accepted as verification evidence.
+
 ## Active configuration
 
 | Item | Source of truth |
@@ -33,7 +47,7 @@ the former local history are not reachable from the public repository. The
 public-content workflow passed for commit
 `765fa82562a5c1f6085ef0f2b22bccad333c642e`.
 
-## Verified capabilities
+## Maintainer-verified capabilities
 
 - Native Windows x64 build with Clang, CMake, and Ninja.
 - ReXGlue bootstrap from pinned upstream commit plus twelve ordered patches.

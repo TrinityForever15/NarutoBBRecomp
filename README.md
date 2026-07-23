@@ -4,6 +4,12 @@ Experimental research project for statically recompiling *Naruto: The Broken
 Bond* through ReXGlue. It currently boots into portions of gameplay on Windows,
 but it is not yet validated for a complete playthrough.
 
+> [!WARNING]
+> **Research preview:** this repository is engineering research, not a usable or
+> supported PC port. Do not promote it as playable until at least one complete
+> campaign or another extensive, continuous gameplay sequence has been finished
+> and documented on the native build.
+
 > [!IMPORTANT]
 > This repository contains **no game files, executables, video, audio, fonts,
 > shaders extracted from the game, or other Ubisoft/Microsoft assets**. You must
@@ -11,9 +17,9 @@ but it is not yet validated for a complete playthrough.
 
 ## Project status
 
-The Windows x64 build boots into normal gameplay and has working D3D12
-rendering, input, GPU capture/replay, and basic audio. The following items are
-still open:
+A maintainer-run Windows x64 build reaches portions of gameplay with D3D12
+rendering, input, GPU capture/replay, and basic audio. This is not evidence of a
+complete or stable playthrough. The following items are still open:
 
 - validate the end of the Orochimaru battle after adding guest function
   `0x8215D000`;
@@ -26,6 +32,57 @@ constant experiment did not work and has been removed.
 
 See [the current status](docs/STATUS.md), [test matrix](docs/TEST_MATRIX.md),
 and [technical decisions](docs/TECHNICAL_DECISIONS.md) before changing code.
+
+## What has been independently verified?
+
+At present, **no unaffiliated third party has independently verified the
+runtime or completed a long native gameplay sequence**. The independently
+hosted verification is deliberately narrow:
+
+- GitHub Actions runs `scripts/test_project_invariants.ps1` on a clean hosted
+  runner, checking public-file hygiene, required documentation, manifest
+  synchronization, generated registration when present, file sizes, and known
+  secret patterns.
+
+Booting Windows builds, reaching portions of gameplay, the cutscene fix, GPU
+replays, and audio observations are maintainer-run local results. They are
+recorded in the status reports and test matrix, but they must not be described
+as independent verification. AI-agent statements are never accepted as test
+evidence.
+
+## AI assistance disclosure
+
+This project has made **heavy use of AI coding agents**. Agents have contributed
+to:
+
+- drafting, translating, restructuring, and checking documentation;
+- proposing debugging hypotheses and narrowing investigation candidates;
+- implementing code, runtime patches, diagnostics, and build scripts;
+- reviewing diffs and auditing repository hygiene, licensing, and public scope;
+- automating builds, regression checks, GitHub workflows, and release tasks.
+
+The maintainer selects which hypotheses to pursue, approves changes, operates
+the local game build, and records observed results. AI-generated or AI-reviewed
+output may be wrong and should be reviewed like any other untrusted
+contribution. Reproducible logs, automated checks, and explicit human
+observation—not agent confidence—support project claims.
+
+## Focused review request
+
+Reviewers are not expected to assess the entire project. A useful first review
+would focus on one of these three high-value files:
+
+1. [`native/narutobb/src/hooks.cpp`](native/narutobb/src/hooks.cpp) —
+   game-specific hooks, timing instrumentation, and assumptions at the
+   guest/runtime boundary;
+2. [`patches/rexglue-sdk/0003-fix-audio-stabilize-XMA-and-SDL-stream-recovery.patch`](patches/rexglue-sdk/0003-fix-audio-stabilize-XMA-and-SDL-stream-recovery.patch)
+   — XMA/SDL queueing, recovery, and real-time audio safety;
+3. [`scripts/test_project_invariants.ps1`](scripts/test_project_invariants.ps1)
+   — the public-content, manifest, secret, and repository-safety audit.
+
+Please report concrete correctness, safety, race-condition, or reproducibility
+issues in one of those files rather than attempting a broad approval of the
+whole port.
 
 ## Repository layout
 
