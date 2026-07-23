@@ -45,6 +45,25 @@ quoted unchanged when needed for accuracy.
 - Preserve the default D3D12 RTV path and the cutscene draw-extent fix unless
   new evidence justifies a decision change.
 
+## AI-assisted contributions
+
+This repository already contains substantial work drafted, implemented,
+reviewed, or automated with AI coding agents. If AI materially contributes to a
+pull request, disclose which parts involved AI and whether its role was
+documentation, hypothesis generation, implementation, review, or automation.
+
+The contributor remains responsible for every submitted line. AI output is not
+test evidence, and an AI review does not replace a focused human review or the
+validation required below.
+
+## Focused review
+
+Do not try to approve the entire project in one pass. New reviewers should
+prefer one focused review of `native/narutobb/src/hooks.cpp`,
+`patches/rexglue-sdk/0003-fix-audio-stabilize-XMA-and-SDL-stream-recovery.patch`,
+or `scripts/test_project_invariants.ps1`, and report concrete findings with a
+narrow reproduction or proposed test.
+
 ## Validation
 
 At minimum, run:
@@ -61,6 +80,7 @@ automatic, visual, auditory, or player-confirmed.
 ## Pull requests
 
 Explain the problem, evidence, change, validation, known limits, and any updated
-documentation. By contributing, you agree that your original contribution is
-provided under the repository's BSD 3-Clause License and that you have the right
-to submit it.
+documentation. Include the AI-assistance disclosure described above when it
+applies. By contributing, you agree that your original contribution is provided
+under the repository's BSD 3-Clause License and that you have the right to
+submit it.
