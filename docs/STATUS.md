@@ -1,6 +1,6 @@
 # Current project status
 
-Last updated: 2026-07-23.
+Last updated: 2026-07-24.
 
 This is the short operational snapshot. Detailed history lives in `SKILL.md`
 and the reports under `recomp/fase4`.
@@ -50,7 +50,7 @@ public-content workflow passed for commit
 ## Maintainer-verified capabilities
 
 - Native Windows x64 build with Clang, CMake, and Ninja.
-- ReXGlue bootstrap from pinned upstream commit plus twelve ordered patches.
+- ReXGlue bootstrap from pinned upstream commit plus fourteen ordered patches.
 - D3D12 initialization and correct RTV rendering on an RX 6650 XT.
 - Runtime mounting of a complete, user-supplied game-data directory.
 - Guest threads and normal game flow after boot.
@@ -76,13 +76,20 @@ reusing the active cache. Its automated run verified project invariants, a
 replays in the baseline. A separate normal shutdown emitted
 `NARUTO_AUDIO_SILENCE_SUMMARY` only after the SDL stream was destroyed.
 
-The local SDK branch `narutobb-integration` contains twelve subject-separated
+The local SDK branch `narutobb-integration` contains fourteen subject-separated
 commits. Pinned upstream base:
 `2bdb97f95f154f32d281aaa08446ae007b8ca117`; expected final tree:
-`62e97f17f8e6cfb4d73905c5158aef1d8d292151`.
+`5144c7af01ce1483a5c59cbde7e419517f5a062e`.
 
 These automated results do not approve perceived audio quality, Story Mode
 progression, save/load, or correct 60 FPS simulation.
+
+The independent phase-2 FPS Release build at
+`native/narutobb/out/build/verification-fps-phase2` also completed codegen,
+game/runtime, and replay-tool compilation. Its normal 30-second boot passed,
+and the exact 12-trace GPU baseline reproduced with zero numerical delta. One
+additional local trace has no public baseline and is intentionally excluded
+from that approved regression set rather than treated as a visual pass.
 
 ## Priority work
 
@@ -112,22 +119,78 @@ post-fix scene has not yet been replayed, so the test remains pending.
 
 ### P1 — genuine open-world 60 FPS
 
-Phase 1 timing diagnostics are complete. Menu, open world, and pause all stay
-near 33.3 ms per frame. Explicit guest kernel waits account for only
-0.028-0.054 ms, while `sub_8219F990` actively polls render-queue progress for
-roughly 31-33 ms. Each frame contains one `VdSwap` and an average of two guest
-vblanks. This is an active synchronization cap, not useful-work saturation.
+Phase 3 proved that the 30 FPS cadence is vblank-quantized rather than a hard
+32 ms workload. A reversible runtime multiplier delivered a measured 120-123
+guest vblanks/s. Menu and pause immediately produced 60-61 complete guest
+frames/s, while the open world produced approximately 57-60 FPS when scene cost
+allowed it. Returning the multiplier to one immediately restored 30 FPS.
+
+The main renderer-ready wait is called from `0x82160E4C`; the render work-event
+wait is called from `0x82161160`. A temporary zero-timeout diagnostic for the
+main wait did not change FPS and moved the latency to `0x8215AF20`, which is the
+recursive guest graphics-device ownership acquire. That bypass was removed.
+Event and device-ownership synchronization must not be bypassed.
 
 The former `0x820E8B58` candidate is not a global frame cap: static analysis
 found 17 reads in 16 functions, and the manual `1/30 -> 1/60` test made no
 perceptible difference. The write toggle was removed.
 
-The renderer delta writer is known (`sub_821C0620`), but the simulation delta
-writer is not. The next candidate is the writer of fields `+64/+68` in the
-object referenced through `0x833A30CC`, consumed by `sub_8276E338` in the open
-world. The next intervention must be a reversible runtime experiment that lets
-render-queue progress advance once per vblank while separately measuring
-simulation speed. **60 FPS is not approved.**
+The renderer delta at `sub_821C0620` dynamically changed from approximately
+33.4 ms to 16.7 ms. The simulation did not: dynamic store tracing identified
+`sub_82BC8FA8`, specifically guest PCs `0x82BC9000/0x82BC9008`, writing
+`0.033333` to fields `+68/+64` once per produced frame. This directly explains
+the player-confirmed doubled animation speed at 60 FPS. The broad generated
+store instrumentation was removed after identifying the writer.
+
+The current opt-in world experiment now substitutes 1/60 in the clock's fixed
+step field `+76` before `sub_82BC8FA8` derives deltas and internal ticks. It
+captures and restores the original value when F8 is suspended or the guarded
+world context ends. Codegen, a full source build, the 15-second default boot
+(`narutobb_088.log`), and project invariants passed. In manual log `_089`, the
+player confirmed 60 FPS with normal animation speed. The same run dipped as low
+as 41 FPS and contained a sustained 43-52 FPS interval: render-frame time rose
+from approximately 16.6 ms to 19-23.4 ms while the 120-123 Hz vblank worker
+remained healthy. With the expensive timing trace disabled in log `_090`, the
+player observed a minimum near 56 FPS. That log also exposed repeated automatic
+guard transitions caused by intermittent world-consumer markers. The guard now
+validates the initial world context for 30 frames and then latches until F8,
+instead of reverting during pause or temporary marker gaps. Build, default boot
+log `_091`, and invariants passed. Runtime log `_092` validated the latch: one
+activation at 120 Hz, one 1/60 clock substitution, no guarded transition, and
+no pacer bypass for the remainder of the recorded session. The player's final
+assessment reported a minimum around 55-56 FPS with instability no longer very
+perceptible. The same 1/60 central-clock correction is now shared by the clean
+menu 120 Hz experiment. The player confirmed correct menu speed, and log `_095`
+recorded exactly 60.00 FPS with one 120 Hz activation and the 1/60 clock.
+
+A unified `naruto_60fps_experiment` mode and launcher now combine the validated
+menu and world behavior. They start disarmed; F8 enables 120 Hz guest vblank and
+the 1/60 simulation clock across menus, pause, transitions, and gameplay, while
+a second F8 restores the captured original timing. Build, default boot log
+`_096`, and invariants passed. End-to-end manual validation of the unified
+launcher is pending.
+Unified manual log `_097` confirmed correct menus and open world, but battle
+animations ran too fast. The battle did not switch the central clock object:
+the same object remained under the 1/60 substitution for the whole route. This
+proves that battle animation has an additional fixed-step or frame-count timing
+path.
+
+Local Tracy captures then compared a ten-second battle sample (530 profiled
+frames, 3,879 guest functions) with an open-world sample (147 heavily profiled
+frames, 3,398 guest functions). Counts were normalized per frame because the
+instrumented world capture was much slower. The comparison rejected collision,
+spatial, scheduler, and known central-clock readers as the missing animation
+clock. A reversible half-rate probe found that task `sub_829C17E0` made the
+battle cadence look correct, but the on-screen jutsu remained accelerated.
+That task is therefore evidence for a separate battle state/command cadence,
+not a complete fix. Halving state-7 routine `sub_82AAF0B8` slowed the fight
+without correcting the jutsu, while halving task `sub_82AB8338` had no visible
+effect. The refined probe build also produced new environment artifacts.
+
+All battle half-rate hooks and the F11 launcher were removed. The retained
+unified experiment is still suitable for menus and sampled open-world play,
+but **global 60 FPS is not approved** because battles remain incorrectly timed.
+Detailed evidence and rejected paths are in `recomp/fase4/FPS_PHASE3_REPORT.md`.
 
 ### P2 — English voice track
 
@@ -150,9 +213,11 @@ crash or audio loss.
    without changing language, volume, or graphics settings.
 6. Close normally and correlate the approximate failure time with
    `NARUTO_AUDIO_SILENCE_SUMMARY`.
-7. For FPS work, instrument writes to `+64/+68` in the object referenced by
-   `0x833A30CC`.
-8. Only then test a reversible per-vblank render-queue advance in the runtime.
+7. When FPS work resumes, keep the validated 120 Hz vblank plus central 1/60
+   clock for menu/open-world tests, but do not treat it as a global mode.
+8. Resume from the jutsu-specific visual timeline or animation-state writer.
+   Do not repeat broad half-rate skips of `sub_829C17E0`, `sub_82AAF0B8`, or
+   `sub_82AB8338`, and do not bypass event/device-ownership synchronization.
 
 ## Invariants
 

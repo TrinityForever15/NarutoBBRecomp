@@ -24,14 +24,21 @@ complete or stable playthrough. The following items are still open:
 - validate the end of the Orochimaru battle after adding guest function
   `0x8215D000`;
 - capture and fix intermittent/missing audio in the exact affected scenes;
-- unlock the open world from its active 30 FPS render-queue synchronization
-  while preserving simulation, animation, physics, menus, and cutscenes.
+- finish the 60 FPS timing path: menus and sampled open-world play now run near
+  60 FPS at correct speed, but battle and jutsu animation timing is unresolved;
+- improve scene-dependent performance and validate battles, cutscenes, and a
+  long continuous playthrough under the eventual timing solution.
 
-There is no approved open-world 60 FPS mode yet. The old `1/30 -> 1/60`
-constant experiment did not work and has been removed.
+There is no approved global 60 FPS mode. A reversible runtime experiment proved
+that 120 Hz guest vblank plus the central 1/60 simulation clock works in menus
+and sampled open-world gameplay, with an observed minimum around 55-56 FPS.
+Battles still contain a separate frame-counted path: overall cadence and jutsu
+visuals could not both be corrected safely, so broad half-rate probes were
+removed. See the phase-3 FPS report for the exact resume point.
 
 See [the current status](docs/STATUS.md), [test matrix](docs/TEST_MATRIX.md),
-and [technical decisions](docs/TECHNICAL_DECISIONS.md) before changing code.
+[technical decisions](docs/TECHNICAL_DECISIONS.md), and
+[phase-3 FPS report](recomp/fase4/FPS_PHASE3_REPORT.md) before changing code.
 
 ## What has been independently verified?
 

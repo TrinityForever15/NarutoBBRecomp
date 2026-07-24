@@ -1,6 +1,6 @@
 # Test matrix
 
-Last updated: 2026-07-23.
+Last updated: 2026-07-24.
 
 Status values: **PASS** means the full stated scenario was observed;
 **PARTIAL** means only part was proven; **PENDING** means a change or plan exists
@@ -68,10 +68,18 @@ without sufficient observation; **FAIL** means the defect was reproduced;
 | FPS-03 | Diagnostic launcher boots with original XEX | **AUTOMATED PASS** | No timing write; 30 s boot without fatal |
 | FPS-04 | Old `0x820E8B58` toggle doubles open-world FPS | **FAIL — REJECTED** | No perceptible change; write removed |
 | FPS-07 | Identify active constant consumers by context | **PASS for diagnostics** | Menu none; world `82199B00`, `8276E338`, `8281CEF0`; pause only `82199B00` |
-| FPS-08 | Classify the 33.3 ms frame | **PASS for diagnostics** | 31-33 ms active queue polling, negligible kernel waits, one swap and two vblanks average |
-| FPS-09 | Identify simulation delta writer | **PARTIAL** | Renderer delta known; writer of world-object `+64/+68` remains unknown |
+| FPS-08 | Classify the 33.3 ms frame | **PASS for diagnostics; PHASE-1 INTERPRETATION REVISED** | Menu is two serialized approximately 16 ms active main/render legs plus their event handoff, not a removable two-vblank sleep |
+| FPS-09 | Identify simulation delta writer | **PASS for diagnostics** | Log `_087` identified `sub_82BC8FA8`: PCs `82BC9000/82BC9008` write fixed 1/30 to world-clock `+68/+64` once per frame |
 | FPS-10 | F10 starts/stops trace without breaking Alt+F4 | **PASS** | Frames 191-236 traced; normal Alt+F4 shutdown |
-| FPS-11 | Genuine open-world 60 FPS with correct simulation | **PENDING** | Create reversible runtime experiment and validate every context |
+| FPS-11 | Genuine open-world 60 FPS with correct simulation | **PARTIAL; SAMPLED WORLD TIMING PASS** | `_089` confirmed correct animation speed; `_092` kept 120 Hz/1/60 latched with no pacer bypass; player observed a 55-56 FPS minimum with little perceptible instability |
+| FPS-12 | Menu one-vblank queue-release experiment | **FAIL — REJECTED** | Hook forced releases after one real vblank, but output stayed near 30 FPS; removing the next wait only moved latency to device ownership |
+| FPS-13 | Menu animation speed at genuine 60 FPS | **FAIL for vblank-only experiment** | Menu reached 60-61 FPS, but player observed doubled animation speed because simulation remained fixed at 1/30 |
+| FPS-14 | Guest 120 Hz discriminates quantization from real workload | **PASS for diagnostics** | Logs `_081`, `_082`, `_085`, and `_087` measured 120-123 guest vblanks/s; menu/pause reached 60-61 FPS and open world reached approximately 57-60 FPS when load allowed |
+| FPS-15 | Menu 60 FPS with correct UI timing | **PASS for sampled menu session** | Player confirmed normal menu speed; log `_095` recorded 60.00 FPS with 120 Hz guest vblank and the central 1/60 clock |
+| FPS-16 | Unified menu-to-world 60 FPS mode | **FAIL for full route** | `_097`: menus and open world retained correct speed, but battle animations accelerated; central clock did not change, so battle has another timing path |
+| FPS-17 | Battle 60 FPS with correct animation timing | **FAIL; INVESTIGATION PAUSED** | Battle cadence improved when `sub_829C17E0` ran at half rate, but the jutsu visual remained accelerated; broad half-rate probes were removed |
+| FPS-18 | Battle/world guest-function profile comparison | **PASS for diagnostics** | Local Tracy samples isolated battle-only work; counts were normalized over 530 battle and 147 heavily profiled world frames; proprietary traces remain untracked |
+| FPS-19 | Half-rate visual candidates | **FAIL; REJECTED** | `sub_82AAF0B8` slowed the fight without fixing the jutsu; `sub_82AB8338` had no visible effect; the refined probe build introduced environment artifacts and was removed |
 
 ## Public-release validation template
 

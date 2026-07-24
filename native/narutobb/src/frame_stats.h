@@ -9,3 +9,7 @@ rex::ui::FrameStats GetNarutoFrameStats();
 // Enables or disables the frame/wait/vblank/timebase trace and the counters
 // for functions that statically read the former 0x820E8B58 candidate.
 void RequestNarutoTimingTraceToggle();
+
+// Suspends or rearms the menu-only experiment selected by its launch cvar.
+// No intervention can be enabled without an explicit command-line opt-in.
+void RequestNarutoMenuExperimentToggle();

@@ -8,6 +8,16 @@ project(narutobb LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(NARUTOBB_PROFILE_GUEST_FUNCTIONS
+       "Emit Tracy zones for every recompiled guest function" OFF)
+
+if(NARUTOBB_PROFILE_GUEST_FUNCTIONS)
+    # Release builds normally compile Tracy out of the runtime. Keep the
+    # profiling build optimized while enabling the profiler lifecycle and
+    # generated guest-function zones for this explicit diagnostic variant.
+    add_compile_definitions(REXGLUE_ENABLE_PROFILING)
+endif()
+
 include(generated/rexglue.cmake)
 
 # Sources
@@ -30,6 +40,15 @@ else()
 endif()
 
 rexglue_setup_target(narutobb)
+
+if(NARUTOBB_PROFILE_GUEST_FUNCTIONS)
+    if(NOT REXGLUE_ENABLE_TRACY)
+        message(FATAL_ERROR
+            "NARUTOBB_PROFILE_GUEST_FUNCTIONS requires REXGLUE_ENABLE_TRACY")
+    endif()
+    target_compile_definitions(narutobb PRIVATE
+        REXGLUE_PROFILE_GUEST_FUNCTIONS)
+endif()
 
 # Headless GPU trace replay utility used to turn F9 captures into PNGs. The
 # SDK contains the replay implementation, but doesn't build a standalone tool.

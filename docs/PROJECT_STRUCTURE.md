@@ -1,6 +1,6 @@
 # Project structure and source-of-truth map
 
-Last updated: 2026-07-23.
+Last updated: 2026-07-24.
 
 This guide explains where work belongs, which copies are authoritative, and
 which local artifacts must never be published.
@@ -73,7 +73,7 @@ Naruto project/
 | Path | Role |
 |---|---|
 | `src/main.cpp` | Native application entry point |
-| `src/narutobb_app.h` | Runtime configuration, data path, F3/F9/F10 bindings |
+| `src/narutobb_app.h` | Runtime configuration, data path, F3/F8/F9/F10 bindings |
 | `src/hooks.cpp` | Frame/timing probes and CompareBackEnds hook |
 | `src/frame_stats.h` | Shared frame-statistics interface |
 | `src/usbcam_stubs.cpp` | Conditional compatibility for an older binary SDK |
@@ -105,7 +105,8 @@ The patch series currently covers POSIX thread startup, USB camera exports,
 XMA/SDL stability, cutscene EDRAM correctness, pacing/draw diagnostics,
 headless replay, safe FFmpeg flush, synchronous-XMA comparison, an explicitly
 reverted downmix experiment, passive audio-flow summaries, and guest timing/F10
-diagnostics.
+diagnostics. The latest timing patch also exposes a live guest-vblank counter
+and attributes waits to guest callers for controlled runtime experiments.
 
 ## Recompilation and historical material
 
@@ -118,7 +119,9 @@ diagnostics.
 | `recomp/fase4/PHASE4_BOOT_REPORT.md` | CompareBackEnds bypass and guest-loop milestone |
 | `recomp/fase4/PHASE4_WINDOWS_REPORT.md` | Chronological Windows engineering record |
 | `recomp/fase4/HANDOFF_CUTSCENES_GPU_2026-07-19.md` | Cutscene GPU diagnosis and fix |
-| `recomp/fase4/FPS_PHASE1_REPORT.md` | Proof of the active 30 FPS queue cap |
+| `recomp/fase4/FPS_PHASE1_REPORT.md` | Initial 30 FPS timing and queue evidence |
+| `recomp/fase4/FPS_PHASE2_REPORT.md` | Menu intervention and serialized main/render diagnosis |
+| `recomp/fase4/FPS_PHASE3_REPORT.md` | 120 Hz/1/60 result, battle profiling, and rejected battle-task probes |
 | `recomp/fase4/xdvdfs_extract_all.py` | Extracts data from a user-owned disc image locally |
 | `recomp/fase4/bisect_black_draw.ps1` | Local GPU-trace draw bisection |
 
@@ -132,6 +135,13 @@ explicitly excluded.
 |---|---|
 | `launchers/Play Naruto - PC.bat` | Normal baseline |
 | `launchers/Play Naruto - Timing Diagnostics.bat` | Guest timing trace; does not enable 60 FPS |
+| `launchers/Play Naruto - Menu 60 FPS Experiment.bat` | Opt-in reproduction of the rejected one-vblank queue intervention; not an approved 60 FPS mode |
+| `launchers/Play Naruto - Menu 120 Hz Vblank Experiment.bat` | Menu-only 120 Hz plus central 1/60 timing experiment |
+| `launchers/Play Naruto - Open World 120 Hz Vblank Experiment.bat` | Guarded open-world 120 Hz plus central 1/60 timing experiment |
+| `launchers/Play Naruto - 60 FPS Experiment.bat` | Unified opt-in 120 Hz guest-vblank plus 1/60 simulation-clock mode; F8 enables/restores it across menus and gameplay |
+| `launchers/Play Naruto - 60 FPS Tracy Profile.bat` | Separate profiling build; local traces only |
+| `launchers/Capture Naruto Battle Profile - 10 Seconds.bat` | Capture a bounded local battle Tracy sample |
+| `launchers/Capture Naruto Open World Profile - 10 Seconds.bat` | Capture a bounded local open-world Tracy sample |
 | `launchers/Play Naruto - Audio Flow Diagnostics.bat` | Passive six-channel silence/activity summary |
 | `launchers/Play Naruto - Synchronous XMA Test.bat` | Controlled XMA scheduling comparison |
 | `launchers/Rebuild Diagnostics.bat` | Codegen, configure, game/runtime and trace tool |
@@ -160,7 +170,7 @@ All launchers resolve the repository root as their parent directory.
 | Missing guest address | fatal log and both manifests |
 | Orochimaru scene | registered `0x8215D000` range and exact scene replay |
 | Crackle/missing audio | SDL driver, XMA context/decoder, audio summary markers |
-| Open world at 30 FPS | `hooks.cpp`, guest timing, `sub_8219F990`, FPS phase-1 report |
+| Open world at 30 FPS | `hooks.cpp`, guest timing, `sub_82160E28`, `sub_8219F990`, FPS phase-1 and phase-2 reports |
 | Cutscene corruption | draw extent estimator, render-target cache, local trace replay |
 | Input | `narutobb_app.h`, runtime input and Win32 key dispatch |
 | Missing files | VFS log and local `recomp/fase4/assets` directory |

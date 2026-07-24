@@ -29,6 +29,10 @@ public:
         "Toggle Naruto frame timing diagnostics",
         [] { RequestNarutoTimingTraceToggle(); });
     rex::ui::RegisterBind(
+        "bind_naruto_menu_queue_experiment", "F8",
+        "Suspend or rearm the selected Naruto menu timing experiment",
+        [] { RequestNarutoMenuExperimentToggle(); });
+    rex::ui::RegisterBind(
         "bind_naruto_gpu_trace", "F9", "Capture one Naruto GPU frame", [this] {
           auto *app_runtime = runtime();
           if (!app_runtime || !app_runtime->graphics_system()) {
@@ -44,6 +48,7 @@ public:
   }
 
   void OnShutdown() override {
+    rex::ui::UnregisterBind("bind_naruto_menu_queue_experiment");
     rex::ui::UnregisterBind("bind_naruto_timing_trace");
     rex::ui::UnregisterBind("bind_naruto_gpu_trace");
   }

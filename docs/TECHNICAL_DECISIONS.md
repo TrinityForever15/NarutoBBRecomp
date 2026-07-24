@@ -1,6 +1,6 @@
 # Technical decision record
 
-Last updated: 2026-07-23.
+Last updated: 2026-07-24.
 
 This file prevents future sessions from repeating rejected approaches or
 treating temporary diagnostics as the active architecture.
@@ -80,7 +80,7 @@ rejected approaches, the project map for path/responsibility changes, and
 Do not commit the SDK checkout. The portable form is the ordered patch series
 in `patches/rexglue-sdk`, applied to pinned upstream commit
 `2bdb97f95f154f32d281aaa08446ae007b8ca117`. The expected final tree is
-`62e97f17f8e6cfb4d73905c5158aef1d8d292151`.
+`5144c7af01ce1483a5c59cbde7e419517f5a062e`.
 
 ## D014 — Clean build and regressions gate integration
 
@@ -102,13 +102,14 @@ output clipping occurred. Restore the legacy downmix and do not perform logging,
 formatting, or allocation in the real-time SDL callback. Use passive counters
 and emit one summary after shutdown.
 
-## D017 — The 30 FPS limit is active render-queue synchronization
+## D017 — Measure render-queue synchronization before changing timing
 
 In menu, open world, and pause, explicit waits are negligible while
 `sub_8219F990` polls queue progress for most of the 33.3 ms frame. Treat high CPU
-usage as busy-wait evidence, not proof of useful-work saturation. The first
-60 FPS experiment must be reversible in the runtime and must measure simulation
-timing independently.
+usage inside that scope as synchronization evidence, not by itself as proof of
+simulation or physics cost. Any experiment must be reversible in the runtime
+and must measure simulation timing independently. Phase 2 subsequently revised
+the interpretation of this evidence; see D019.
 
 ## D018 — Public repository contains code and reproducible procedures only
 
@@ -116,3 +117,63 @@ Do not publish game data, XEX files, keys, extracted shaders, media, fonts,
 screenshots, GPU traces, generated guest C++, or other proprietary-derived
 artifacts. Contributors supply their own legal game files locally. The repository
 uses English for all new public documentation and collaboration text.
+
+## D019 — Treat menu 30 FPS as serialized main/render cost, not a removable vblank cap
+
+The menu-only one-vblank queue-release hook executed but output stayed near
+30 FPS. The render frame contains approximately 16-17 ms active plus a 16-18 ms
+work-event wait, while the main handoff contains approximately 17 ms active plus
+a 15-16 ms renderer-ready wait. A temporary zero-timeout wait only moved the
+latency into the recursive guest graphics-device ownership acquire.
+
+Reject direct event-wait and device-ownership bypasses. Future 60 FPS work must
+profile and reduce the active cost on both serialized legs or establish a
+correct parallel ownership handoff, then separately validate simulation delta
+and visible speed.
+
+## D020 — Treat 30 FPS as vblank quantization with a separate fixed simulation step
+
+The guarded 120 Hz guest-vblank experiment supersedes the claim that two full
+serialized active legs necessarily require 33 ms. At a measured 120-123 guest
+vblanks/s, menu and pause produced 60-61 complete frames/s and the open world
+produced approximately 57-60 FPS when scene load allowed it. Returning to 60 Hz
+guest vblank restored 30 FPS immediately. Keep the vblank intervention in the
+runtime, reversible, context-guarded, and opt-in while it is experimental.
+
+Presentation cadence and simulation timing must be changed together. Dynamic
+store tracing proved that `sub_82BC8FA8` writes fixed 1/30 deltas at guest PCs
+`0x82BC9000/0x82BC9008` even while rendering at 60 FPS, which caused the
+player-confirmed 2x animation speed. The controlled correction substitutes
+1/60 in the clock configuration field `+76` before the original updater runs,
+so derived deltas and internal ticks agree. Capture and restore the original
+field value whenever the guarded experiment is disabled; do not patch the XEX.
+Manual log `_089` subsequently confirmed 60 FPS with normal animation speed.
+This approves the timing relationship, not performance stability: the same run
+dropped to 41 FPS with continuous scope tracing. With that trace disabled,
+manual log `_090` stayed near 60 with an observed minimum around 56. Because
+world-consumer markers are intermittent, use them only to validate the initial
+30-frame world context; once active, latch the experiment until explicit F8
+suspension instead of oscillating the vblank and simulation clocks.
+
+The same central-clock correction is required in menus. Log `_095` and player
+observation confirmed 60.00 FPS with normal UI speed. The user-facing experiment
+therefore combines both validated interventions behind one disarmed cvar: F8
+enables or restores vblank and simulation timing together across every context.
+
+## D021 — Reject broad half-rate battle-task hooks
+
+Battle and open-world Tracy captures proved that the accelerated battle path is
+not another switch of the central clock object and is not explained by the
+known 1/30 consumers, collision work, or the sampled scheduler virtual stage.
+A reversible every-other-frame skip of `sub_829C17E0` made overall battle
+cadence appear correct, but the jutsu visual still ran fast. This separates a
+battle state/command cadence from the remaining visual animation timeline; it
+does not validate skipping the whole task as a fix.
+
+Do not ship or repeat broad skips of `sub_829C17E0`, `sub_82AAF0B8`, or
+`sub_82AB8338`. Halving `sub_82AAF0B8` slowed the fight without correcting the
+jutsu, halving `sub_82AB8338` had no visible effect, and the refined probe build
+introduced new environment artifacts. All F11 battle probes were removed.
+Future work must identify the jutsu-specific animation-state writer or visual
+timeline and scale that narrow value while retaining the proven menu/open-world
+vblank and central-clock relationship.

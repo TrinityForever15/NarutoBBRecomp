@@ -2,8 +2,8 @@
 
 - Upstream: <https://github.com/rexglue/rexglue-sdk.git>
 - Pinned base: `2bdb97f95f154f32d281aaa08446ae007b8ca117` (local v0.8.0 base)
-- Validated local head: `c91f2b53a1018b779ed3b5d9d201412719cb73ca`
-- Expected resulting tree: `62e97f17f8e6cfb4d73905c5158aef1d8d292151`
+- Validated local head: `6fda9628c05eafb0b6628aae02bfdc7a264f51f2`
+- Expected resulting tree: `5144c7af01ce1483a5c59cbde7e419517f5a062e`
 - Local development branch: `narutobb-integration`
 
 Patch order:
@@ -20,7 +20,11 @@ Patch order:
 10. revert the balanced downmix after a manual auditory regression;
 11. add a passive upstream-silence summary with no real-time logging;
 12. add guest frame/scope timing, waits, vblank, `VdSwap`, timebase sources,
-    and correct F10 system-key delivery on Windows.
+    and correct F10 system-key delivery on Windows;
+13. expose the live guest-vblank counter and guest wait caller attribution for
+    controlled runtime experiments;
+14. support a controlled guest-vblank rate multiplier, precise sub-refresh
+    waits, and worker timing for reversible title experiments.
 
 Reconstruct from the pinned upstream base:
 
