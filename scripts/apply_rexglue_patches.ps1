@@ -11,8 +11,8 @@ $ResolvedSdkDir = if ([IO.Path]::IsPathRooted($SdkDir)) {
 }
 $PatchDir = Join-Path $ProjectRoot "patches/rexglue-sdk"
 $Base = "2bdb97f95f154f32d281aaa08446ae007b8ca117"
-$ExpectedHead = "6fda9628c05eafb0b6628aae02bfdc7a264f51f2"
-$ExpectedTree = "5144c7af01ce1483a5c59cbde7e419517f5a062e"
+$ExpectedHead = "5a89b1adcab5d4295fd20c5c3e29b717cfcf11ad"
+$ExpectedTree = "5a0710954c5f400b58bbba27c8448a255cdd91e4"
 $gitCommand = Get-Command git -ErrorAction SilentlyContinue
 $git = if ($gitCommand) { $gitCommand.Source } else {
     $candidate = @("C:/Program Files/Git/cmd/git.exe", "C:/Program Files/Git/bin/git.exe") |
@@ -38,7 +38,7 @@ if ($dirty.Count) {
     throw "SDK has local changes; patches were not applied so existing work is preserved"
 }
 $patches = @(Get-ChildItem -LiteralPath $PatchDir -Filter "*.patch" -File | Sort-Object Name)
-if ($patches.Count -ne 14) { throw "Expected 14 patches, found $($patches.Count)" }
+if ($patches.Count -ne 16) { throw "Expected 16 patches, found $($patches.Count)" }
 
 foreach ($patch in $patches) {
     Write-Host "[git am] $($patch.Name)"

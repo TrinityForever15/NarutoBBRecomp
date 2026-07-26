@@ -23,8 +23,8 @@ $ResolvedBaselinePath = Resolve-ProjectPath $BaselinePath
 $Tool = Join-Path $ResolvedBuildDir "narutobb_trace_dump.exe"
 if (-not (Test-Path -LiteralPath $Tool)) { throw "Replay tool is missing: $Tool" }
 if (-not (Test-Path -LiteralPath $ResolvedBaselinePath)) { throw "Baseline is missing: $ResolvedBaselinePath" }
-$traces = @(Get-ChildItem -LiteralPath $ResolvedTraceDir -Filter "55530825_*.xtr" -File | Sort-Object Name)
-if ($traces.Count -eq 0) { throw "No local traces found in $ResolvedTraceDir" }
+$allTraces = @(Get-ChildItem -LiteralPath $ResolvedTraceDir -Filter "55530825_*.xtr" -File | Sort-Object Name)
+if ($allTraces.Count -eq 0) { throw "No local traces found in $ResolvedTraceDir" }
 New-Item -ItemType Directory -Force -Path $ResolvedOutputDir | Out-Null
 
 $baselineByTrace = @{}
@@ -32,6 +32,26 @@ $baselineEntries = Get-Content -LiteralPath $ResolvedBaselinePath -Raw -Encoding
 foreach ($entry in $baselineEntries) {
     $baselineByTrace[$entry.trace] = $entry
 }
+
+# The local trace directory may contain exploratory captures. They are not a
+# regression failure merely because no public baseline has been approved for
+# them, and they must never be promoted automatically. Require every approved
+# baseline trace, replay exactly that set, and report extra local captures as
+# non-comparable.
+$traceByName = @{}
+foreach ($trace in $allTraces) {
+    $traceByName[$trace.Name] = $trace
+}
+$missing = @($baselineEntries | Where-Object { -not $traceByName.ContainsKey($_.trace) })
+if ($missing.Count) {
+    throw "Approved baseline traces are missing locally: $($missing.trace -join ', ')"
+}
+foreach ($trace in $allTraces) {
+    if (-not $baselineByTrace.ContainsKey($trace.Name)) {
+        Write-Host "[skip] $($trace.Name) has no approved public baseline"
+    }
+}
+$traces = @($baselineEntries | ForEach-Object { $traceByName[$_.trace] } | Sort-Object Name)
 
 $results = @()
 $failures = 0

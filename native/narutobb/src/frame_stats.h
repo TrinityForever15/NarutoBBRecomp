@@ -13,3 +13,8 @@ void RequestNarutoTimingTraceToggle();
 // Suspends or rearms the menu-only experiment selected by its launch cvar.
 // No intervention can be enabled without an explicit command-line opt-in.
 void RequestNarutoMenuExperimentToggle();
+
+// Writes a numbered marker to the log. Pressing it at the start and end of a
+// scene brackets that scene exactly, instead of correlating audio telemetry
+// against an estimated wall-clock time.
+void RequestNarutoAudioMark();

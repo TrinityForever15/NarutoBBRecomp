@@ -1,6 +1,6 @@
 # Project structure and source-of-truth map
 
-Last updated: 2026-07-24.
+Last updated: 2026-07-25.
 
 This guide explains where work belongs, which copies are authoritative, and
 which local artifacts must never be published.
@@ -73,8 +73,8 @@ Naruto project/
 | Path | Role |
 |---|---|
 | `src/main.cpp` | Native application entry point |
-| `src/narutobb_app.h` | Runtime configuration, data path, F3/F8/F9/F10 bindings |
-| `src/hooks.cpp` | Frame/timing probes and CompareBackEnds hook |
+| `src/narutobb_app.h` | Runtime configuration, data path, F3/F7/F8/F9/F10 bindings |
+| `src/hooks.cpp` | Frame/timing probes, simulation speed telemetry, real-time step limit, audio scene marker and CompareBackEnds hook |
 | `src/frame_stats.h` | Shared frame-statistics interface |
 | `src/usbcam_stubs.cpp` | Conditional compatibility for an older binary SDK |
 | `tools/trace_dump_main.cpp` | Headless `.xtr` replay entry point |
@@ -105,8 +105,12 @@ The patch series currently covers POSIX thread startup, USB camera exports,
 XMA/SDL stability, cutscene EDRAM correctness, pacing/draw diagnostics,
 headless replay, safe FFmpeg flush, synchronous-XMA comparison, an explicitly
 reverted downmix experiment, passive audio-flow summaries, and guest timing/F10
-diagnostics. The latest timing patch also exposes a live guest-vblank counter
-and attributes waits to guest callers for controlled runtime experiments.
+diagnostics. The timing patches expose a live guest-vblank counter, attribute
+waits to guest callers, and add a controlled vblank rate multiplier. Patch 15
+derives the presentation pacer target from a cvar so it cannot disagree with the
+simulation step of a fixed-timestep context. Patch 16 adds per-stream XMA
+continuity and output flow telemetry plus opt-in split-buffer diagnostics,
+accumulated entirely outside the real-time audio callback.
 
 ## Recompilation and historical material
 
@@ -121,7 +125,10 @@ and attributes waits to guest callers for controlled runtime experiments.
 | `recomp/fase4/HANDOFF_CUTSCENES_GPU_2026-07-19.md` | Cutscene GPU diagnosis and fix |
 | `recomp/fase4/FPS_PHASE1_REPORT.md` | Initial 30 FPS timing and queue evidence |
 | `recomp/fase4/FPS_PHASE2_REPORT.md` | Menu intervention and serialized main/render diagnosis |
-| `recomp/fase4/FPS_PHASE3_REPORT.md` | 120 Hz/1/60 result, battle profiling, and rejected battle-task probes |
+| `recomp/fase4/FPS_PHASE3_REPORT.md` | Historical 120 Hz/1/60 result, battle profiling, and rejected battle-task probes |
+| `recomp/fase4/FPS_PHASE4_REPORT.md` | Current timing model: per-context cadence, real-time fixed-step limit, and validation boundary |
+| `recomp/fase4/AUDIO_PLAN.md` | Cutscene audio plan, per-phase measurements, and the rejected split-release shortcut |
+| `recomp/fase4/analyze_cutin.py` | Diffs Tracy CSV exports to isolate a cut-in code path |
 | `recomp/fase4/xdvdfs_extract_all.py` | Extracts data from a user-owned disc image locally |
 | `recomp/fase4/bisect_black_draw.ps1` | Local GPU-trace draw bisection |
 
@@ -139,11 +146,22 @@ explicitly excluded.
 | `launchers/Play Naruto - Menu 120 Hz Vblank Experiment.bat` | Menu-only 120 Hz plus central 1/60 timing experiment |
 | `launchers/Play Naruto - Open World 120 Hz Vblank Experiment.bat` | Guarded open-world 120 Hz plus central 1/60 timing experiment |
 | `launchers/Play Naruto - 60 FPS Experiment.bat` | Unified opt-in 120 Hz guest-vblank plus 1/60 simulation-clock mode; F8 enables/restores it across menus and gameplay |
+| `launchers/Play Naruto - 60 FPS.bat` | Arms the frame rate mode at boot without F8; simulation step, pacer target and vblank multiplier all derive from one `TARGET_HZ` value |
+| `launchers/Play Naruto - 120 FPS Experiment.bat` | Same mechanism at 120; not validated, because frame-counted combat timing can change while reported speed stays correct |
+| `launchers/Play Naruto - Locked Cadence 60.bat` | Same as the 60 FPS launcher but requires F8, kept for A/B against original timing in one session |
 | `launchers/Play Naruto - 60 FPS Tracy Profile.bat` | Separate profiling build; local traces only |
 | `launchers/Capture Naruto Battle Profile - 10 Seconds.bat` | Capture a bounded local battle Tracy sample |
 | `launchers/Capture Naruto Open World Profile - 10 Seconds.bat` | Capture a bounded local open-world Tracy sample |
+| `launchers/Capture Naruto Cut-In Jutsu 60 FPS - 40 Seconds.bat` | Battle sample where the status-jutsu portrait overlay is used, with the experiment active |
+| `launchers/Capture Naruto Cut-In Jutsu 30 FPS - 40 Seconds.bat` | Same sample at original timing, as the reference for the 60 FPS one |
+| `launchers/Capture Naruto Battle Control - 40 Seconds.bat` | Negative control: same battle without the portrait overlay, so a set difference isolates its code path |
+| `launchers/Export Tracy Profiles to CSV.bat` | Exports the local `.tracy` captures for `recomp/fase4/analyze_cutin.py` |
 | `launchers/Play Naruto - Audio Flow Diagnostics.bat` | Passive six-channel silence/activity summary |
+| `launchers/Play Naruto - Audio Stream Telemetry.bat` | Per-stream XMA continuity and output flow reports, with F7 scene markers; phase 1 of `recomp/fase4/AUDIO_PLAN.md` |
+| `launchers/Play Naruto - Audio Stall Fix Test.bat` | Same telemetry with `naruto_xma_stall_on_missing_input` enabled, to test treating a not-yet-supplied input buffer as a stall rather than a stream error |
+| `launchers/Play Naruto - Audio Queue Sweep.bat` | Prompts for an output queue depth and runs the stall telemetry at it, to test whether output backpressure delays the guest feeding XMA input buffers |
 | `launchers/Play Naruto - Synchronous XMA Test.bat` | Controlled XMA scheduling comparison |
+| `launchers/Rebuild Game and Runtime.bat` | Fast rebuild for hook or runtime source changes; no code generation |
 | `launchers/Rebuild Diagnostics.bat` | Codegen, configure, game/runtime and trace tool |
 | `launchers/Run GPU Replay Diagnostics.bat` | Replays the local 12-trace set |
 | `launchers/Run Draw Bisection.bat` | Runs local draw bisection scenarios |

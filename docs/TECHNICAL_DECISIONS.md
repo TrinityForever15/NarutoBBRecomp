@@ -1,6 +1,6 @@
 # Technical decision record
 
-Last updated: 2026-07-24.
+Last updated: 2026-07-25.
 
 This file prevents future sessions from repeating rejected approaches or
 treating temporary diagnostics as the active architecture.
@@ -80,7 +80,7 @@ rejected approaches, the project map for path/responsibility changes, and
 Do not commit the SDK checkout. The portable form is the ordered patch series
 in `patches/rexglue-sdk`, applied to pinned upstream commit
 `2bdb97f95f154f32d281aaa08446ae007b8ca117`. The expected final tree is
-`5144c7af01ce1483a5c59cbde7e419517f5a062e`.
+`5a0710954c5f400b58bbba27c8448a255cdd91e4`.
 
 ## D014 — Clean build and regressions gate integration
 
@@ -133,6 +133,12 @@ and visible speed.
 
 ## D020 — Treat 30 FPS as vblank quantization with a separate fixed simulation step
 
+**Historical qualification:** D022-D024 supersede this section's assumption
+that the central fixed-step substitution is required in menus and the open
+world. Those contexts are variable timestep and were already correctly timed;
+only the vblank multiplier changes their production cadence. The evidence and
+rejected synchronization bypasses below remain valid.
+
 The guarded 120 Hz guest-vblank experiment supersedes the claim that two full
 serialized active legs necessarily require 33 ms. At a measured 120-123 guest
 vblanks/s, menu and pause produced 60-61 complete frames/s and the open world
@@ -155,12 +161,18 @@ world-consumer markers are intermittent, use them only to validate the initial
 30-frame world context; once active, latch the experiment until explicit F8
 suspension instead of oscillating the vblank and simulation clocks.
 
-The same central-clock correction is required in menus. Log `_095` and player
-observation confirmed 60.00 FPS with normal UI speed. The user-facing experiment
-therefore combines both validated interventions behind one disarmed cvar: F8
-enables or restores vblank and simulation timing together across every context.
+Log `_095` and player observation confirmed 60.00 FPS with normal UI speed.
+Later speed telemetry showed the menu clock was in variable mode, so the
+central-step substitution was inert there. The user-facing experiment still
+keeps one target for vblank, pacing, and fixed contexts so those controls
+cannot disagree when a battle begins.
 
 ## D021 — Reject broad half-rate battle-task hooks
+
+**Superseded diagnosis:** D022 later proved that the apparent jutsu-specific
+problem was a fixed-step battle receiving burst frames. The rejection of broad
+task skips remains active; the former visual-timeline resume direction does
+not.
 
 Battle and open-world Tracy captures proved that the accelerated battle path is
 not another switch of the central clock object and is not explained by the
@@ -174,6 +186,122 @@ Do not ship or repeat broad skips of `sub_829C17E0`, `sub_82AAF0B8`, or
 `sub_82AB8338`. Halving `sub_82AAF0B8` slowed the fight without correcting the
 jutsu, halving `sub_82AB8338` had no visible effect, and the refined probe build
 introduced new environment artifacts. All F11 battle probes were removed.
-Future work must identify the jutsu-specific animation-state writer or visual
-timeline and scale that narrow value while retaining the proven menu/open-world
-vblank and central-clock relationship.
+Do not resume from a jutsu-specific animation writer without new evidence.
+Validate the real-time step limit and cut-in duration as described by D022-D024.
+
+## D022 — Battle uses a fixed timestep, so its speed is the achieved frame rate
+
+Speed telemetry in the central clock updater settled what static analysis and
+Tracy sampling could not. The updater writes the raw delta at `+68` and the
+scaled delta at `+64` every call, so simulated seconds divided by real seconds
+is a direct speed factor. Log `_105` measured it per context:
+
+| Context | `+72` fixed mode | FPS | Step | Speed |
+|---|---|---:|---|---:|
+| Menu and open world | 0 | 30 and 60 | 1/30 and 1/60 | 1.000 |
+| Battle, experiment active | 1 | 60 | 1/60 | 1.01 |
+| Battle, experiment suspended | 1 | 60 | 1/30 | 1.99 |
+
+Menus and the open world use a variable timestep. They measure elapsed time
+themselves, report exactly 1.000 at any frame rate, and never needed the step
+substitution; the vblank multiplier alone was doing the work there.
+
+Battle uses a fixed timestep, where speed is exactly achieved frame rate
+multiplied by the step. The port does not vblank-limit that context, so it
+runs near 60 FPS against a 1/30 step. **The default build was therefore running
+battle at roughly twice speed, and the 60 FPS experiment had been masking that
+by writing 1/60.** The accelerated battle recorded in `_097` and in FPS-16 was
+misattributed to the experiment; it is the baseline behaviour.
+
+This also explains the surviving symptom. The guest loop is not bound to the
+presentation pacer and produces occasional 2-4 ms frames, each advancing the
+world a full step. A cheap two-dimensional overlay such as the battle status
+portrait renders fast enough to trigger those bursts, while animation-heavy and
+effect-heavy jutsu stay near the pacer and look correct. The portrait cut-in
+did not need a jutsu-specific timeline writer, which D021 had assumed.
+
+## D023 — Correct a fixed-step context by real elapsed time, not by a target step
+
+The correction grants each frame no more world time than real time has
+delivered. Steady frames still receive the exact nominal step, so determinism
+is preserved where the rate is stable; only frames the guest produces faster
+than the cadence are shortened to the time they actually took.
+
+Capping the step at the nominal value is wrong and was rejected after testing.
+It corrects frames that are faster than the target but puts every frame slower
+than the target into slow motion, which is what entering the open world at a
+120 FPS target looked like before the ceiling was removed. Measured over
+samples between 30 and 110 FPS, mean speed was 0.864 with a 0.282 minimum
+before the fix and 1.000 with a 0.650 minimum after it.
+
+The only remaining ceiling is a hitch guard, taken from the title's own maximum
+delta at `+80` because that is the largest frame time the updater already
+considers safe in its variable branch.
+
+The step, the presentation pacer target and the guest vblank multiplier are all
+derived from one target rate so they cannot disagree. Disagreement between them
+was the original defect: a pacer aiming at 61.5 Hz against a 1/60 step produced
+a permanent 2.5 percent overspeed in every battle.
+
+## D024 — A correct speed factor does not approve a frame rate
+
+`raw_speed` at 1.000 proves the clock is right. It says nothing about logic
+counted in frames, which fighting games commonly use for combo windows,
+invulnerability and input buffering. The 120 FPS target reached a 119.37 FPS
+median at 1.000 speed and is still marked experimental for that reason. Approve
+a target against combat behaviour and cut-in duration, never against how smooth
+it looks or what the speed factor reports.
+
+## D025 — Measure audio per stream before changing it
+
+Audio scenarios stayed pending for a long time because every change was judged
+by listening. The balanced downmix consumed a full cycle on that basis before
+being rejected.
+
+Per-stream telemetry is now the entry point. `XmaContext::Telemetry` accumulates
+decoded frames, buffer swaps, loop rewinds, decode errors split by cause, stall
+durations and guest writes to the read offset. Decoded audio seconds per real
+second is the primary metric, the direct analogue of the simulation speed factor
+that settled the frame rate work.
+
+All counters are incremented under locks the audio paths already hold, and all
+formatting happens on the decoder or audio worker thread. Nothing is added to
+the real-time SDL callback, because periodic I/O there was already identified as
+a dropout source and removed once (D016).
+
+## D026 — Cutscene audio is an input-buffer deadlock, not an output problem
+
+The output path is excluded by measurement. Inside a failing cutscene the queue
+stays effectively full, no underrun occurs, and no waveform discontinuity is
+measured at any buffer seam, while decode errors rise from 6.6% to 25.3% of
+attempts. Varying the output queue depth eight-fold moved stalls and timeouts by
+1%. **A different audio backend, XAudio2 or otherwise, would not address this
+defect**, and that avenue is closed unless new evidence appears.
+
+Every decode error is one case: a frame split across two input buffers whose
+continuation the title has not supplied. The title keeps exactly one input
+buffer valid at a time in 97% of samples, so holding the consumed buffer while
+waiting deadlocks against its refill. The title responds to the resulting
+`error_status = 4` by rewinding, which is the repeated fragment that is heard;
+every observed guest write to the read offset was a rewind.
+
+The frame rate mode is not a factor: 87.1 stalls per second with it suspended
+against 88.0 with it active.
+
+## D027 — A split frame must be retained across a buffer swap
+
+Treating the starved case as a bounded wait is correct and retained behind
+`naruto_xma_stall_on_missing_input`. It removes every decode error and raises
+decoded frames 23% inside the scene. The wait must be bounded: an unbounded
+version left seven streams silent, one for 21 seconds, because a stream ending
+on a split frame never receives another buffer.
+
+Releasing the consumed buffer without retaining the partial frame is rejected.
+It does break the deadlock, taking stalls and timeouts to zero, but contexts
+with no valid input rose from 0.3% to 8% of samples, streams died, and the
+cutscene soft-locked at its end. Discarding the leading part of a split frame
+desynchronizes the title's accounting of submitted against consumed data.
+
+Retention of the partial frame across the swap is therefore a requirement of
+any fix here, not a later optimization. Both cvars stay disabled by default
+until that work exists and is validated.

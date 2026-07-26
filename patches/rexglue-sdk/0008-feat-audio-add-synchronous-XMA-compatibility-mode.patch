@@ -1,7 +1,7 @@
 From fe31821d5fa82bfb1aeb7603d358d5f59db9a324 Mon Sep 17 00:00:00 2001
 From: Codex <codex@local>
 Date: Wed, 22 Jul 2026 22:47:25 -0300
-Subject: [PATCH] feat(audio): add synchronous XMA compatibility mode
+Subject: [PATCH 08/16] feat(audio): add synchronous XMA compatibility mode
 
 ---
  include/rex/audio/xma/context.h | 10 ++++
@@ -359,6 +359,3 @@ index cbcdece..3793ee7 100644
    resume_fence_.Signal();
  }
  
--- 
-2.55.0.windows.3
-

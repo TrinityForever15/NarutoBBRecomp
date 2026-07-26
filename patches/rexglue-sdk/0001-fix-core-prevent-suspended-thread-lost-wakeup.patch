@@ -1,7 +1,7 @@
 From 880632f7a0d0fe0e7fefe9f937b56e187ed9fc91 Mon Sep 17 00:00:00 2001
 From: Codex <codex@local>
 Date: Tue, 21 Jul 2026 16:37:47 -0300
-Subject: [PATCH 1/6] fix(core): prevent suspended-thread lost wakeup
+Subject: [PATCH 01/16] fix(core): prevent suspended-thread lost wakeup
 
 ---
  src/core/threading_posix.cpp | 7 ++++++-
@@ -31,6 +31,3 @@ index e10e30b..f2f172f 100644
      thread->handle_.state_signal_.wait(lock,
                                         [thread] { return thread->handle_.suspend_count_ == 0; });
    }
--- 
-2.53.0.windows.3
-

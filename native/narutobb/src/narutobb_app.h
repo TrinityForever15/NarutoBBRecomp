@@ -33,6 +33,10 @@ public:
         "Suspend or rearm the selected Naruto menu timing experiment",
         [] { RequestNarutoMenuExperimentToggle(); });
     rex::ui::RegisterBind(
+        "bind_naruto_audio_mark", "F7",
+        "Write a numbered marker to the log, to bracket an audio scene",
+        [] { RequestNarutoAudioMark(); });
+    rex::ui::RegisterBind(
         "bind_naruto_gpu_trace", "F9", "Capture one Naruto GPU frame", [this] {
           auto *app_runtime = runtime();
           if (!app_runtime || !app_runtime->graphics_system()) {

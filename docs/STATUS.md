@@ -1,6 +1,6 @@
 # Current project status
 
-Last updated: 2026-07-24.
+Last updated: 2026-07-25.
 
 This is the short operational snapshot. Detailed history lives in `SKILL.md`
 and the reports under `recomp/fase4`.
@@ -50,7 +50,7 @@ public-content workflow passed for commit
 ## Maintainer-verified capabilities
 
 - Native Windows x64 build with Clang, CMake, and Ninja.
-- ReXGlue bootstrap from pinned upstream commit plus fourteen ordered patches.
+- ReXGlue bootstrap from pinned upstream commit plus sixteen ordered patches.
 - D3D12 initialization and correct RTV rendering on an RX 6650 XT.
 - Runtime mounting of a complete, user-supplied game-data directory.
 - Guest threads and normal game flow after boot.
@@ -66,6 +66,32 @@ public-content workflow passed for commit
   context, fixing the native crash observed around 20.6 seconds after boot.
 - Passive audio-flow diagnostics collect counters without logging or allocating
   in the real-time callback.
+- Simulation speed is measured directly as simulated seconds per real second,
+  reported per context as `NARUTO_SIM_CADENCE`.
+- Battle was found to be a fixed-timestep context that the port does not
+  vblank-limit, so the default build had been running it near twice speed. The
+  real-time step limit corrects that and is active without any key press.
+- Frame rate mode arms itself at boot, and the simulation step, presentation
+  pacer target and guest vblank multiplier all derive from one target rate.
+  Sampled battle measured a 1.000 speed median at 60, and 120 reached a
+  119.37 FPS median at 1.000 speed.
+
+## Remaining work on timing
+
+- No full battle has been validated against frame-counted combat timing. Combo
+  windows, invulnerability and input buffering are unmeasured, and a correct
+  speed factor does not cover them. The 120 target stays experimental for this
+  reason.
+- The status-jutsu portrait cut-in was explained by burst frames rather than a
+  dedicated timeline writer, and the burst source is corrected, but its duration
+  was never compared at 30 against 60. Capture launchers and
+  `recomp/fase4/analyze_cutin.py` are staged for that measurement.
+- Frame rate dips below the target remain unprofiled. They no longer affect
+  simulation speed, so they are a smoothness issue rather than a correctness
+  one.
+- The current timing/audio integration passed a clean Release build, controlled
+  30-second boot and all 12 approved GPU baselines. Repeat them after any code
+  change and before release.
 
 ## Reproducibility evidence
 
@@ -76,10 +102,10 @@ reusing the active cache. Its automated run verified project invariants, a
 replays in the baseline. A separate normal shutdown emitted
 `NARUTO_AUDIO_SILENCE_SUMMARY` only after the SDL stream was destroyed.
 
-The local SDK branch `narutobb-integration` contains fourteen subject-separated
+The local SDK branch `narutobb-integration` contains sixteen subject-separated
 commits. Pinned upstream base:
 `2bdb97f95f154f32d281aaa08446ae007b8ca117`; expected final tree:
-`5144c7af01ce1483a5c59cbde7e419517f5a062e`.
+`5a0710954c5f400b58bbba27c8448a255cdd91e4`.
 
 These automated results do not approve perceived audio quality, Story Mode
 progression, save/load, or correct 60 FPS simulation.
@@ -90,6 +116,14 @@ game/runtime, and replay-tool compilation. Its normal 30-second boot passed,
 and the exact 12-trace GPU baseline reproduced with zero numerical delta. One
 additional local trace has no public baseline and is intentionally excluded
 from that approved regression set rather than treated as a visual pass.
+
+The current phase-4 audit build at
+`native/narutobb/out/build/verification-phase4-audit` completed independent
+configure, codegen, game/runtime compilation and replay-tool compilation. Its
+30-second controlled boot passed, and all 12 approved GPU traces reproduced
+with zero numerical delta. Two additional local captures have no approved
+public baseline and were reported as non-comparable rather than promoted or
+counted as failures.
 
 ## Priority work
 
@@ -108,8 +142,31 @@ reported. The experiment and its real-time periodic logger were removed.
 
 The active `audio_silence_diagnostics` mode only accumulates six-channel activity,
 silence, and peak counters in memory. It writes one
-`NARUTO_AUDIO_SILENCE_SUMMARY` during normal shutdown. The exact scene where a
-sound disappears still needs to be captured with this mode.
+`NARUTO_AUDIO_SILENCE_SUMMARY` during normal shutdown.
+
+A reproducible failing cutscene has now been captured with per-stream
+instrumentation, which closes the long-standing gap of judging audio by
+listening alone. The mechanism is understood and the output path is excluded:
+
+- Decode errors rise from 6.6% to 25.3% of attempts inside the scene while the
+  output queue, underruns and seam discontinuities are unchanged.
+- 100% of those errors are a frame split across two input buffers whose
+  continuation the title has not supplied yet.
+- The title keeps one input buffer valid at a time in 97% of samples, so
+  holding the consumed buffer deadlocks against its refill.
+- Output queue depth is irrelevant: an eight-fold change moved stalls by 1%.
+  A different audio backend would not address this defect.
+
+Treating the starved case as a bounded wait
+(`naruto_xma_stall_on_missing_input`, opt-in) removes every decode error, raises
+decoded frames 23% in the scene, and largely removes the hiss. Intermittency and
+repeated fragments remain.
+
+Releasing the consumed buffer without retaining the partial frame is rejected:
+it removes the deadlock but soft-locks the cutscene, because discarding data
+desynchronizes the title's accounting. **Partial-frame retention across a buffer
+swap is the remaining work**, and it is a requirement rather than a refinement.
+Detail and evidence: `recomp/fase4/AUDIO_PLAN.md`, `AUDIO-13` to `AUDIO-21`.
 
 ### P1 — end of the Orochimaru battle
 
@@ -117,80 +174,45 @@ The previous fatal call to unregistered guest address `0x8215D000` has a narrow
 function range in both manifests and in generated registration output. The exact
 post-fix scene has not yet been replayed, so the test remains pending.
 
-### P1 — genuine open-world 60 FPS
+### P1 — correctly timed 60 FPS and combat validation
 
-Phase 3 proved that the 30 FPS cadence is vblank-quantized rather than a hard
-32 ms workload. A reversible runtime multiplier delivered a measured 120-123
-guest vblanks/s. Menu and pause immediately produced 60-61 complete guest
-frames/s, while the open world produced approximately 57-60 FPS when scene cost
-allowed it. Returning the multiplier to one immediately restored 30 FPS.
+Phase 3 proved that the open-world 30 FPS cadence is guest-vblank quantization,
+not a hard 32 ms workload. Raising the guest-visible vblank rate from 60 to
+120 Hz produced 60-61 FPS in menus and pause and approximately 57-60 FPS in the
+open world when scene cost allowed it. The wait and device-ownership bypasses,
+the `0x820E8B58` write, and broad half-rate battle-task hooks remain rejected.
 
-The main renderer-ready wait is called from `0x82160E4C`; the render work-event
-wait is called from `0x82161160`. A temporary zero-timeout diagnostic for the
-main wait did not change FPS and moved the latency to `0x8215AF20`, which is the
-recursive guest graphics-device ownership acquire. That bypass was removed.
-Event and device-ownership synchronization must not be bypassed.
+Phase 4 direct speed telemetry corrected the battle diagnosis. The single
+`sub_82BC8FA8` clock runs in variable mode for menus/open world and fixed mode
+for battle. Variable contexts measure real elapsed time and remain at a 1.000
+speed factor at either 30 or 60 FPS. Battle instead advances by one configured
+step per produced frame, while the port does not vblank-limit that context.
+With the frame-rate experiment suspended, log `_105` measured battle near
+60 FPS against a 1/30 step and a 1.99 speed factor. The accelerated battle was
+a baseline defect that the earlier 1/60 experiment had masked.
 
-The former `0x820E8B58` candidate is not a global frame cap: static analysis
-found 17 reads in 16 functions, and the manual `1/30 -> 1/60` test made no
-perceptible difference. The write toggle was removed.
+The active correction limits a fixed-step frame to the real time delivered for
+that frame. Stable frames retain the exact nominal step; only frames produced
+too quickly are shortened. A nominal ceiling was rejected because it caused
+slow motion whenever achieved FPS fell below the target. The only upper bound
+is the title's own maximum delta at clock field `+80`.
 
-The renderer delta at `sub_821C0620` dynamically changed from approximately
-33.4 ms to 16.7 ms. The simulation did not: dynamic store tracing identified
-`sub_82BC8FA8`, specifically guest PCs `0x82BC9000/0x82BC9008`, writing
-`0.033333` to fields `+68/+64` once per produced frame. This directly explains
-the player-confirmed doubled animation speed at 60 FPS. The broad generated
-store instrumentation was removed after identifying the writer.
+The frame-rate target, presentation pacer and guest-vblank multiplier now
+derive from one target value. The 60 FPS launcher arms this mode after boot,
+and F8 remains a reversible suspension control. Log `_109` measured a 1.000
+median over 62 sampled battle windows without a key press. Log `_111` reached
+a 119.37 FPS median at 1.000 speed with a 120 FPS target, but that target stays
+experimental because frame-counted combat behavior is unmeasured.
 
-The current opt-in world experiment now substitutes 1/60 in the clock's fixed
-step field `+76` before `sub_82BC8FA8` derives deltas and internal ticks. It
-captures and restores the original value when F8 is suspended or the guarded
-world context ends. Codegen, a full source build, the 15-second default boot
-(`narutobb_088.log`), and project invariants passed. In manual log `_089`, the
-player confirmed 60 FPS with normal animation speed. The same run dipped as low
-as 41 FPS and contained a sustained 43-52 FPS interval: render-frame time rose
-from approximately 16.6 ms to 19-23.4 ms while the 120-123 Hz vblank worker
-remained healthy. With the expensive timing trace disabled in log `_090`, the
-player observed a minimum near 56 FPS. That log also exposed repeated automatic
-guard transitions caused by intermittent world-consumer markers. The guard now
-validates the initial world context for 30 frames and then latches until F8,
-instead of reverting during pause or temporary marker gaps. Build, default boot
-log `_091`, and invariants passed. Runtime log `_092` validated the latch: one
-activation at 120 Hz, one 1/60 clock substitution, no guarded transition, and
-no pacer bypass for the remainder of the recorded session. The player's final
-assessment reported a minimum around 55-56 FPS with instability no longer very
-perceptible. The same 1/60 central-clock correction is now shared by the clean
-menu 120 Hz experiment. The player confirmed correct menu speed, and log `_095`
-recorded exactly 60.00 FPS with one 120 Hz activation and the 1/60 clock.
+The status-jutsu portrait cut-in was explained by 2-4 ms burst frames rather
+than a separate animation timeline. The real-time limit removes that source,
+but the overlay duration has not been compared at 30 and 60 FPS. No complete
+battle has yet validated combo windows, invulnerability, input buffering,
+animation, physics and cut-in duration together. Those manual scenarios, plus
+a clean build and the 12-trace regression, are the remaining approval boundary.
 
-A unified `naruto_60fps_experiment` mode and launcher now combine the validated
-menu and world behavior. They start disarmed; F8 enables 120 Hz guest vblank and
-the 1/60 simulation clock across menus, pause, transitions, and gameplay, while
-a second F8 restores the captured original timing. Build, default boot log
-`_096`, and invariants passed. End-to-end manual validation of the unified
-launcher is pending.
-Unified manual log `_097` confirmed correct menus and open world, but battle
-animations ran too fast. The battle did not switch the central clock object:
-the same object remained under the 1/60 substitution for the whole route. This
-proves that battle animation has an additional fixed-step or frame-count timing
-path.
-
-Local Tracy captures then compared a ten-second battle sample (530 profiled
-frames, 3,879 guest functions) with an open-world sample (147 heavily profiled
-frames, 3,398 guest functions). Counts were normalized per frame because the
-instrumented world capture was much slower. The comparison rejected collision,
-spatial, scheduler, and known central-clock readers as the missing animation
-clock. A reversible half-rate probe found that task `sub_829C17E0` made the
-battle cadence look correct, but the on-screen jutsu remained accelerated.
-That task is therefore evidence for a separate battle state/command cadence,
-not a complete fix. Halving state-7 routine `sub_82AAF0B8` slowed the fight
-without correcting the jutsu, while halving task `sub_82AB8338` had no visible
-effect. The refined probe build also produced new environment artifacts.
-
-All battle half-rate hooks and the F11 launcher were removed. The retained
-unified experiment is still suitable for menus and sampled open-world play,
-but **global 60 FPS is not approved** because battles remain incorrectly timed.
-Detailed evidence and rejected paths are in `recomp/fase4/FPS_PHASE3_REPORT.md`.
+Current report: `recomp/fase4/FPS_PHASE4_REPORT.md`. Phase 1 through phase 3
+remain historical evidence and must be read with their supersession notices.
 
 ### P2 — English voice track
 
@@ -206,18 +228,17 @@ crash or audio loss.
 ## Recommended next session
 
 1. Run the normal launcher and replay the end of the Orochimaru battle.
-2. Record audio behavior without using pause as an immediate workaround.
-3. Repeat a scene where pause/resume previously changed music or removed noise.
-4. Save the generated log number and close normally.
-5. Replay the known missing-sound scene with the audio-flow diagnostics launcher,
-   without changing language, volume, or graphics settings.
-6. Close normally and correlate the approximate failure time with
-   `NARUTO_AUDIO_SILENCE_SUMMARY`.
-7. When FPS work resumes, keep the validated 120 Hz vblank plus central 1/60
-   clock for menu/open-world tests, but do not treat it as a global mode.
-8. Resume from the jutsu-specific visual timeline or animation-state writer.
-   Do not repeat broad half-rate skips of `sub_829C17E0`, `sub_82AAF0B8`, or
-   `sub_82AB8338`, and do not bypass event/device-ownership synchronization.
+2. Implement XMA partial-frame retention across a buffer swap; keep both audio
+   interventions opt-in until the same cutscene exits normally without dead or
+   repeating streams.
+3. Re-run the reproducible cutscene with F7 markers and compare per-stream
+   telemetry against the bounded-stall baseline.
+4. Measure the same status-jutsu portrait cut-in at 30 and 60 FPS with the
+   staged capture launchers and `analyze_cutin.py`.
+5. Validate one complete battle at 60 FPS, including combo windows,
+   invulnerability, input buffering, animation, physics and cut-in duration.
+6. Repeat the clean build and full 12-trace regression after any further code
+   change and before release.
 
 ## Invariants
 

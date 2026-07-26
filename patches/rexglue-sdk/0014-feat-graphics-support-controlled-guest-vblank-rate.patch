@@ -1,7 +1,7 @@
 From 6fda9628c05eafb0b6628aae02bfdc7a264f51f2 Mon Sep 17 00:00:00 2001
 From: Codex <codex@local>
 Date: Thu, 23 Jul 2026 22:11:16 -0300
-Subject: [PATCH] feat(graphics): support controlled guest vblank rate
+Subject: [PATCH 14/16] feat(graphics): support controlled guest vblank rate
 
 ---
  include/rex/diagnostics/guest_timing.h | 18 ++++++
@@ -352,6 +352,3 @@ index c32444a..0f8a305 100644
  void RecordGuestVdSwap() {
    if (!GuestTimingTraceEnabled()) {
      return;
--- 
-2.55.0.windows.3
-

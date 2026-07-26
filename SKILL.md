@@ -15,7 +15,7 @@ Target: *Naruto: The Broken Bond* USA/Europe multi-language release, Title ID
 
 - Active project: `native/narutobb`.
 - Active local runtime: `tooling/rexglue-sdk`.
-- Portable runtime source: fourteen patches under `patches/rexglue-sdk`.
+- Portable runtime source: sixteen patches under `patches/rexglue-sdk`.
 - Local user-supplied data: `recomp/fase4/assets`.
 - Active build: `native/narutobb/out/build/win-amd64-source`.
 - Active XEX SHA-256:
@@ -25,7 +25,12 @@ Target: *Naruto: The Broken Bond* USA/Europe multi-language release, Title ID
 - Never publish game data, keys, extracted shaders/media, screenshots, GPU
   traces, or proprietary-derived research artifacts.
 
-## Latest result: menu 30 FPS is a serialized main/render pipeline
+## Historical: menu 30 FPS read as a serialized main/render pipeline
+
+The conclusions in this section were revised twice. Phase 3 showed the cadence
+was vblank quantization rather than an irreducible workload, and phase 4 showed
+battle is a separate fixed-timestep context. Read
+"FPS phase 4" under "Diagnostic routing" for the current model.
 
 Phase 1 instrumentation was implemented in the runtime without modifying the
 XEX. `sub_821B1DD0` is the measured frame boundary. The runtime records wall and
@@ -73,18 +78,19 @@ constant has 17 direct reads across 16 functions and is not a global fixed step.
 Five timebase reads occur per frame: `0x8219FA24`, `0x821A17A8`, and
 `0x821C068C` once each, plus `0x821F62B0` twice. `sub_821C0620` writes the
 renderer delta at `+21576` and queue-wait accumulators at `+21616/+21620`.
-The simulation delta writer is still unknown. The next candidate is the writer
-of `+64/+68` in the object referenced by `0x833A30CC`, read by
+At the end of phase 2, the simulation delta writer was still unknown. The next
+candidate was the writer of `+64/+68` in the object referenced by `0x833A30CC`, read by
 `sub_8276E338` in the open world.
 
 `sub_821C1468` is not the main game loop: it appeared only 16 times during
 initialization, for microseconds, on another thread.
 
-The next FPS work must profile and reduce the active approximately 16 ms on
-both the main and render legs, or prove a correct parallel ownership handoff.
-It must also identify the simulation delta writer. Validate simulation speed,
-animation, physics, menu, pause, battle, and cutscenes before claiming success.
-There is no approved 60 FPS mode.
+The simulation delta writer was later identified as `sub_82BC8FA8`, and the
+cadence question was settled by vblank quantization in phase 3 and by the
+fixed-timestep classification in phase 4. Validate simulation speed, animation,
+physics, menu, pause, battle, and cutscenes before claiming success. A 60 FPS
+mode now exists and is measured correct in sampled play, but no full campaign
+or complete battle has been validated against frame-counted combat timing.
 
 ### F10 Win32 fix
 
@@ -93,8 +99,9 @@ only F10 without Alt from `WM_SYSKEYDOWN/UP`; other system-key behavior remains
 native. `narutobb_067.log` recorded trace enable at frame 191, disable at 236,
 and normal Alt+F4 shutdown.
 
-Full reports: `recomp/fase4/FPS_PHASE1_REPORT.md` and
-`recomp/fase4/FPS_PHASE2_REPORT.md`.
+Full reports: `recomp/fase4/FPS_PHASE1_REPORT.md`,
+`recomp/fase4/FPS_PHASE2_REPORT.md`, `recomp/fase4/FPS_PHASE3_REPORT.md`, and
+the current `recomp/fase4/FPS_PHASE4_REPORT.md`.
 
 ## Current audio architecture and evidence
 
@@ -143,6 +150,57 @@ active with peak 0.524, and no output clipping marker appeared.
 The matrix was reverted. Periodic formatting/I/O in the real-time SDL callback
 was also removed because it was the most plausible source of the new dropouts.
 Do not repeat this experiment without new evidence.
+
+### Cutscene audio: the one-buffer deadlock (2026-07-25)
+
+Cutscene audio was measured for the first time instead of judged by listening.
+Per-stream telemetry lives in `XmaContext::Telemetry`, is accumulated on the
+decoder worker thread, and is reported once per second as `NARUTO_XMA_STREAM`.
+Output flow is reported separately as `NARUTO_AUDIO_FLOW`. F7 writes
+`NARUTO_AUDIO_MARK` so a scene can be bracketed exactly. Both reports are
+disabled by default and neither adds work to the real-time callback.
+
+The primary metric is `fill_ratio`, decoded audio seconds per real second. It
+is the audio analogue of the simulation speed factor: a healthy stream reports
+1.0, a starving one reports less, and a stream repeating a section stays near
+1.0 while `offset_repeats` climbs.
+
+What the measurements established:
+
+- Inside the failing scene, decode errors rise from 6.6% to 25.3% of attempts
+  and decoded frames halve, while the output queue, underruns and seam
+  discontinuities are unchanged. The output path is not implicated.
+- 100% of decode errors are one case: a frame split across two input buffers
+  whose continuation the title has not supplied. There were no malformed frame
+  headers at all.
+- The title keeps exactly **one input buffer valid at a time** in 97% of
+  samples. Holding the consumed buffer while waiting therefore deadlocks
+  against the title's refill.
+- Every observed guest write to `input_buffer_read_offset` was a rewind. The
+  title responds to `error_status = 4` by restarting the stream, which is the
+  repeated fragment that is heard.
+- Output queue depth is irrelevant: 128 frames against 16, an eight-fold
+  change, moved stalls and timeouts by 1%. A different audio backend would not
+  address this defect.
+- The frame rate mode is not involved: 87.1 stalls per second with it
+  suspended against 88.0 with it active.
+
+Two interventions exist, both opt-in and both disabled by default.
+`naruto_xma_stall_on_missing_input` treats the starved case as a wait rather
+than a stream error, bounded by `naruto_xma_stall_timeout_ms`. It removed every
+decode error and raised decoded frames 23%, and the maintainer reported the
+hiss largely gone. An unbounded version was wrong and left seven streams silent,
+one for 21 seconds.
+
+`naruto_xma_release_buffer_on_split` is **rejected**. Releasing the consumed
+buffer does break the deadlock, taking stalls and timeouts to zero, but
+discarding the leading part of the split frame desynchronizes the title's
+accounting of submitted against consumed data. Contexts with no valid input
+rose from 0.3% to 8% of samples, streams died, and the cutscene soft-locked at
+its end. Partial-frame retention is a requirement of this fix, not a later
+refinement.
+
+Full record: `recomp/fase4/AUDIO_PLAN.md`.
 
 ### Passive source-flow diagnostics
 
@@ -213,11 +271,11 @@ depend on this debug comparison.
 Pinned upstream base:
 `2bdb97f95f154f32d281aaa08446ae007b8ca117`.
 
-Expected final tree after fourteen patches:
-`5144c7af01ce1483a5c59cbde7e419517f5a062e`.
+Expected final tree after sixteen patches:
+`5a0710954c5f400b58bbba27c8448a255cdd91e4`.
 
-Validated local head after the phase-3 vblank experiment:
-`6fda9628c05eafb0b6628aae02bfdc7a264f51f2`.
+Validated local head for the current sixteen-patch series:
+`5a89b1adcab5d4295fd20c5c3e29b717cfcf11ad`.
 
 The local commit hash may change when patches are reapplied because committer
 metadata changes; the tree hash is the portable integrity check.
@@ -356,7 +414,60 @@ appeared, so battle retained the corrected central clock object and must use an
 additional fixed step or frame-count path. Do not weaken the proven world/menu
 correction; capture battle-exclusive timing consumers first.
 
-### Battle timing follow-up and pause point (2026-07-24)
+### FPS phase 4: battle is a fixed-timestep context (2026-07-25)
+
+Speed telemetry in the `sub_82BC8FA8` hook resolved the battle question that
+static analysis and Tracy sampling had not. The updater writes the raw delta at
+`+68` and the scaled delta at `+64` on every call, so simulated seconds divided
+by real seconds is a direct speed factor, measurable in any context with or
+without the experiment. Log `_105`:
+
+| Context | `+72` | FPS | Step | Speed |
+|---|---:|---:|---|---:|
+| Menu, open world | 0 | 30 and 60 | 1/30 and 1/60 | 1.000 |
+| Battle, experiment active | 1 | 60 | 1/60 | 1.01 |
+| Battle, experiment suspended | 1 | 60 | 1/30 | 1.99 |
+
+Menus and the open world are variable timestep. They measure elapsed time
+themselves and are correct at any frame rate, so the step substitution never
+mattered there; the vblank multiplier alone produced the validated result.
+
+Battle is fixed timestep, where speed is exactly achieved frame rate multiplied
+by the step, and the port does not vblank-limit it. The default build was
+running battle near twice speed, and the 60 FPS experiment was masking that
+rather than causing it. The accelerated battle in `_097` was misattributed.
+
+The full clock structure, all derived from `+76` in fixed mode: `+40` and `+48`
+accumulators, `+56` delta in ticks, `+64` and `+68` scaled and raw delta, `+72`
+fixed-mode flag, `+76` configured step, `+80` maximum delta clamp, `+92` and
+`+96` time scales, `+104` and `+112` secondary accumulators, `+136` absolute
+timestamp. Static analysis found a single call site, `sub_827F73F0`, and a
+single instance at `0x833A30CC`, which rules out a second hidden clock.
+
+`+76` is not constant across contexts. Logs `_095/_097/_098` captured
+`3D088889` and `_100..103` captured `3C87FCB9`, so a hook that captures the
+original once per clock-pointer change captures it once per session and
+restores a foreign value later.
+
+The correction grants each frame no more world time than real time delivered.
+Steady frames keep the exact nominal step; only frames produced faster than the
+cadence are shortened. It is not part of the 60 FPS experiment, because the bug
+it fixes exists in the default configuration. A nominal ceiling was tried and
+rejected: it puts every frame slower than the target into slow motion. The only
+ceiling is the title's own maximum delta at `+80`.
+
+The portrait cut-in needed no jutsu-specific timeline writer. The guest loop is
+not bound to the pacer and produces 2-4 ms burst frames that each advanced the
+world a full step; a cheap two-dimensional overlay triggers them while
+effect-heavy jutsu stay near the pacer. Cut-in duration at 30 against 60 was
+never measured, so that remains open.
+
+Step, pacer target and vblank multiplier now derive from one target rate.
+`_109` measured a 1.000 median over 62 battle samples without any key press.
+`_111` reached a 119.37 FPS median at 1.000 speed with multiplier 4. A correct
+speed factor does not approve frame-counted combat timing.
+
+### Battle timing follow-up, superseded by phase 4 (2026-07-24)
 
 Two local Tracy captures provide the current resume point. The battle sample
 contains 530 profiled frames and 3,879 guest functions; the open-world sample
@@ -387,10 +498,12 @@ correct the jutsu. Half-rating battle-only task `sub_82AB8338` produced no
 visible change. The refined probe build also showed new environment artifacts.
 
 All battle half-rate hooks, the F11 binding, its cvar, and its launcher were
-removed. When work resumes, instrument the jutsu-specific visual animation
-timeline or its writer. Do not repeat broad task skipping, do not alter the
-validated menu/open-world central clock, and do not claim global 60 FPS until a
-full battle keeps both gameplay cadence and every visible jutsu at normal speed.
+removed. Do not repeat broad task skipping.
+
+The resume plan recorded here — instrument the jutsu-specific animation
+timeline — was based on a premise that phase 4 disproved. The accelerated
+visual was burst frames in a fixed-timestep context, not a dedicated timeline.
+Read the phase-4 section above before acting on anything in this section.
 
 | Symptom | First evidence and code |
 |---|---|

@@ -2,8 +2,8 @@
 
 - Upstream: <https://github.com/rexglue/rexglue-sdk.git>
 - Pinned base: `2bdb97f95f154f32d281aaa08446ae007b8ca117` (local v0.8.0 base)
-- Validated local head: `6fda9628c05eafb0b6628aae02bfdc7a264f51f2`
-- Expected resulting tree: `5144c7af01ce1483a5c59cbde7e419517f5a062e`
+- Validated local head: `5a89b1adcab5d4295fd20c5c3e29b717cfcf11ad`
+- Expected resulting tree: `5a0710954c5f400b58bbba27c8448a255cdd91e4`
 - Local development branch: `narutobb-integration`
 
 Patch order:
@@ -24,7 +24,12 @@ Patch order:
 13. expose the live guest-vblank counter and guest wait caller attribution for
     controlled runtime experiments;
 14. support a controlled guest-vblank rate multiplier, precise sub-refresh
-    waits, and worker timing for reversible title experiments.
+    waits, and worker timing for reversible title experiments;
+15. derive the Naruto presentation pacer target from a cvar so it cannot
+    disagree with the simulation step of a fixed-timestep context;
+16. add per-stream XMA continuity and output flow telemetry plus opt-in
+    split-buffer stall/release diagnostics, accumulated outside the real-time
+    audio callback.
 
 Reconstruct from the pinned upstream base:
 

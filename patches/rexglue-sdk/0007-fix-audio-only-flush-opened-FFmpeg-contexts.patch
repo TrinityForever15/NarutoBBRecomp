@@ -1,7 +1,7 @@
 From 6e023b7621690ca7808ea2bf5ddeb1a9ff01dd42 Mon Sep 17 00:00:00 2001
 From: Codex <codex@local>
 Date: Wed, 22 Jul 2026 21:56:55 -0300
-Subject: [PATCH] fix(audio): only flush opened FFmpeg contexts
+Subject: [PATCH 07/16] fix(audio): only flush opened FFmpeg contexts
 
 ---
  src/audio/xma_context.cpp | 6 +++++-
@@ -24,6 +24,3 @@ index aa3aa59..1357e7c 100644
      avcodec_flush_buffers(av_context_);
    }
    if (av_frame_) {
--- 
-2.55.0.windows.3
-

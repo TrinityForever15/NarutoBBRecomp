@@ -16,6 +16,8 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cstring>
 #include <mutex>
 
 REXCVAR_DEFINE_BOOL(
@@ -27,6 +29,32 @@ REXCVAR_DEFINE_BOOL(
     "Let F8 enable or suspend the validated 120 Hz guest-vblank and 1/60 "
     "simulation-clock combination across menus, pause, transitions, and "
     "gameplay. The experiment starts disarmed.");
+REXCVAR_DEFINE_DOUBLE(
+    naruto_target_frame_rate, 60.0, "Diagnostics",
+    "Frame rate the fixed-timestep simulation is told to assume. Telemetry "
+    "proved battle runs with a fixed step, where simulation speed is exactly "
+    "achieved_fps multiplied by the step, so this must match the pacer target "
+    "in naruto_pacing_target_hz.");
+REXCVAR_DEFINE_BOOL(
+    naruto_sim_cadence_telemetry, true, "Diagnostics",
+    "Emit the NARUTO_SIM_CADENCE speed report. Costs two guest loads and one "
+    "clock read per frame, so disabling it isolates whether measurement is "
+    "affecting a frame rate result.");
+REXCVAR_DEFINE_BOOL(
+    naruto_60fps_on_start, false, "Diagnostics",
+    "Arm the frame rate experiment automatically a few frames after boot "
+    "instead of waiting for F8. F8 still suspends and restores it.");
+REXCVAR_DEFINE_BOOL(
+    naruto_realtime_step_limit, true, "Diagnostics",
+    "Never let a fixed-timestep context simulate more world time than real "
+    "time has elapsed. Normal frames still receive the exact nominal step, so "
+    "determinism is preserved; only frames the guest produces faster than the "
+    "target cadence are shortened to the time they actually took.");
+REXCVAR_DEFINE_BOOL(
+    naruto_relative_simulation_step, false, "Diagnostics",
+    "Legacy mode. Substitute half of the fixed step the title configured "
+    "instead of the step implied by naruto_target_frame_rate. Kept only to "
+    "reproduce earlier sessions and is disabled by default.");
 REXCVAR_DEFINE_BOOL(
     naruto_menu_60fps_experiment, false, "Diagnostics",
     "Allow the menu-only queue wait hook to return after one guest vblank. "
@@ -66,6 +94,85 @@ std::atomic<uint32_t> g_timing_consumer_frame_mask{0};
 constexpr uint32_t kSimulationFixedStepOffset = 76;
 constexpr uint32_t kSimulationStep60HzBits = 0x3C888889;
 
+// Phase-3 logs proved the title reconfigures the fixed step by context:
+// narutobb_095/097/098 captured 1/30 while narutobb_100..103 captured
+// 0.0166 s. The previous hook captured the original only when the clock
+// pointer changed, which happens once per session, so a session armed in a
+// 60 Hz context substituted 1/60 over 1/60 and restored a foreign value.
+// Track every value the title writes and remember what this hook wrote, so a
+// title-driven change is never mistaken for our own substitution.
+std::atomic<uint32_t> g_last_written_step_bits{0};
+std::atomic<uint64_t> g_suppressed_step_changes{0};
+std::chrono::steady_clock::time_point g_last_step_log =
+    std::chrono::steady_clock::time_point{};
+
+// Guard against substituting garbage. A simulation step outside this range is
+// not a plausible fixed frame time and is left untouched.
+constexpr float kMinPlausibleStepSeconds = 1.0f / 1000.0f;
+constexpr float kMaxPlausibleStepSeconds = 1.0f / 10.0f;
+
+float StepBitsToSeconds(uint32_t bits) {
+  float value = 0.0f;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+uint32_t StepSecondsToBits(float value) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+// Speed factor telemetry. The updater writes the raw delta at +68 and the
+// scaled delta at +64 on every call, so the simulated seconds consumed per
+// real second is simply their sum divided by elapsed wall time. That single
+// number settles whether a context runs at correct speed: 1.0 is correct,
+// 2.0 is double speed, 0.5 is half speed. It is measured with and without the
+// experiment, in every context, and costs two guest loads per frame.
+constexpr uint32_t kSimulationRawDeltaOffset = 68;
+constexpr uint32_t kSimulationScaledDeltaOffset = 64;
+constexpr uint32_t kSimulationFixedModeOffset = 72;
+// The updater's own variable-step branch clamps a measured delta against this
+// field, so it is the title's notion of the largest safe frame time.
+constexpr uint32_t kSimulationMaxDeltaOffset = 80;
+
+uint64_t g_cadence_frames = 0;
+double g_cadence_raw_seconds = 0.0;
+double g_cadence_scaled_seconds = 0.0;
+std::chrono::steady_clock::time_point g_cadence_start =
+    std::chrono::steady_clock::time_point{};
+// A one-second average hides a short burst, and a cheap overlay such as the
+// battle status portrait is exactly the case where the frame rate can spike
+// for well under a second. Track the extremes of the frame interval so a
+// burst is visible instead of averaged away.
+std::chrono::steady_clock::time_point g_cadence_previous_frame =
+    std::chrono::steady_clock::time_point{};
+double g_cadence_min_interval_ms = 0.0;
+double g_cadence_max_interval_ms = 0.0;
+// Worst instantaneous ratio of simulated time to real time in the window.
+// Multiplying a peak frame rate by the step read at report time is wrong once
+// the step varies per frame, so measure the ratio on the frame itself.
+double g_cadence_peak_instant_speed = 0.0;
+constexpr auto kCadenceReportInterval = std::chrono::milliseconds(500);
+
+// Real-time budget for the fixed-step substitution. The guest loop is not
+// bound to the presentation pacer and produces occasional 2-4 ms frames, which
+// telemetry showed advancing the simulation 4x to 12x for that frame. Granting
+// each frame no more world time than real time has actually delivered removes
+// those bursts while leaving steady frames on the exact nominal step.
+double g_step_credit_seconds = 0.0;
+std::chrono::steady_clock::time_point g_step_last_frame =
+    std::chrono::steady_clock::time_point{};
+// Fallback hitch guard, used only when the title's own maximum delta is not
+// readable. It bounds how much world time a single recovery frame may apply.
+constexpr double kStepCreditMaxNominalMultiple = 4.0;
+
+bool IsPlausibleStep(uint32_t bits) {
+  const float value = StepBitsToSeconds(bits);
+  return std::isfinite(value) && value >= kMinPlausibleStepSeconds &&
+         value <= kMaxPlausibleStepSeconds;
+}
+
 // Static disassembly proves that these guest functions contain direct reads
 // of 0x820E8B58. The value is widely used as a threshold/default, not as a
 // single authoritative world step, which explains why changing it had no
@@ -90,6 +197,17 @@ constexpr uint32_t kGpuWaitProbeFunction = 0x8219F990;
 constexpr uint32_t kFrameDeltaWriterFunction = 0x821C0620;
 constexpr uint32_t kMainFrameProbeFunction = 0x82160E28;
 constexpr uint32_t kMenuExperimentStableFrames = 30;
+// Let boot settle on original timing before a cvar arms the experiment.
+constexpr uint64_t kAutoArmFrame = 120;
+
+// The title's vblank-quantized cadence is 30 FPS, so the guest-visible vblank
+// rate has to scale with the requested target. The runtime clamps the
+// multiplier to four, which caps the reachable target at 120 FPS.
+uint32_t TargetVblankMultiplier() {
+  const double target = REXCVAR_GET(naruto_target_frame_rate);
+  const long steps = std::lround(target / 30.0);
+  return static_cast<uint32_t>(std::clamp<long>(steps, 1, 4));
+}
 
 struct MenuQueueWaitScope {
   bool active = false;
@@ -576,6 +694,12 @@ void RequestNarutoTimingTraceToggle() {
   g_timing_trace_toggle_requested.store(true, std::memory_order_release);
 }
 
+void RequestNarutoAudioMark() {
+  static std::atomic<uint64_t> mark_sequence{0};
+  const uint64_t sequence = mark_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+  REXLOG_INFO("NARUTO_AUDIO_MARK seq={}", sequence);
+}
+
 void RequestNarutoMenuExperimentToggle() {
   g_menu_experiment_toggle_requested.store(true, std::memory_order_release);
 }
@@ -675,6 +799,16 @@ extern "C" __attribute__((noinline)) REX_FUNC(sub_821B1DD0) {
         previous_consumer_mask, frame);
   }
 
+  // Arming from a cvar reuses the F8 path exactly, so there is a single place
+  // that changes experiment state, emits the log line and sets the vblank
+  // rate. Waiting a few frames keeps boot on original timing.
+  static bool auto_arm_done = false;
+  if (!auto_arm_done && frame >= kAutoArmFrame &&
+      REXCVAR_GET(naruto_60fps_on_start)) {
+    auto_arm_done = true;
+    g_menu_experiment_toggle_requested.store(true, std::memory_order_release);
+  }
+
   if (g_menu_experiment_toggle_requested.exchange(
           false, std::memory_order_acq_rel)) {
     if (REXCVAR_GET(naruto_60fps_experiment) &&
@@ -687,10 +821,14 @@ extern "C" __attribute__((noinline)) REX_FUNC(sub_821B1DD0) {
                                          std::memory_order_release);
       g_60fps_experiment_effective.store(requested,
                                          std::memory_order_release);
-      rex::diagnostics::SetGuestVblankRateMultiplier(requested ? 2 : 1);
-      REXLOG_INFO("NARUTO_60FPS_EXPERIMENT state={} via F8 rate_hz={}",
-                  requested ? "active" : "suspended",
-                  requested ? 120 : 60);
+      const uint32_t multiplier = TargetVblankMultiplier();
+      rex::diagnostics::SetGuestVblankRateMultiplier(requested ? multiplier : 1);
+      REXLOG_INFO(
+          "NARUTO_60FPS_EXPERIMENT state={} target_fps={:.1f} multiplier={} "
+          "rate_hz={}",
+          requested ? "active" : "suspended",
+          REXCVAR_GET(naruto_target_frame_rate), requested ? multiplier : 1,
+          requested ? 60 * multiplier : 60);
     } else if (REXCVAR_GET(naruto_world_120hz_vblank_experiment) &&
                !REXCVAR_GET(naruto_60fps_experiment) &&
                !REXCVAR_GET(naruto_menu_120hz_vblank_experiment) &&
@@ -1140,10 +1278,24 @@ extern "C" __attribute__((noinline)) REX_FUNC(sub_8276E338) {
 #undef DEFINE_TIMING_CONSUMER_HOOK
 
 // The central clock updater uses the fixed-step value at +76 to derive the
-// simulation deltas at +64/+68 and its internal tick counters. Preserve the
-// title's original value, and substitute 1/60 only while either guarded 120 Hz
-// vblank experiment is effective. Restoring the captured value keeps F8 and
-// every default launch fully reversible without modifying the XEX.
+// simulation deltas at +64/+68 and its internal tick counters. Every value the
+// title writes is tracked, so a context change is detected instead of being
+// captured once per session, and the captured value is always restored. The
+// original XEX is never modified.
+//
+// Two independent interventions write this field.
+//
+// The 60 FPS experiment raises the nominal step to the configured target rate
+// and is gated behind F8.
+//
+// The real-time limit is not part of that experiment and applies whenever the
+// context uses a fixed step. Simulation speed in a fixed-step context is
+// exactly achieved_fps multiplied by the step, and telemetry measured the
+// default configuration running battle near twice speed: a 1/30 step against
+// roughly 58 delivered frames per second. Granting each frame no more world
+// time than real time has actually delivered corrects that, leaves steady
+// frames on the exact nominal step, and also removes the 2-4 ms burst frames
+// that were advancing the world 4x to 12x for their duration.
 REX_EXTERN(__imp__sub_82BC8FA8);
 extern "C" __attribute__((noinline)) REX_FUNC(sub_82BC8FA8) {
   const uint32_t simulation_clock = ctx.r3.u32;
@@ -1152,33 +1304,114 @@ extern "C" __attribute__((noinline)) REX_FUNC(sub_82BC8FA8) {
       g_world_vblank_experiment_effective.load(std::memory_order_acquire) ||
       g_vblank_experiment_effective.load(std::memory_order_acquire);
 
-  if (experiment_active && simulation_clock != 0) {
+  // The real-time limit is not part of the 60 FPS experiment. Telemetry showed
+  // the default configuration running battle at roughly twice speed, because
+  // that context uses a fixed step of 1/30 while the guest loop delivers about
+  // 58 frames per second. Correcting that must therefore work with the
+  // experiment suspended as well.
+  const bool limit_realtime =
+      simulation_clock != 0 && REXCVAR_GET(naruto_realtime_step_limit) &&
+      REX_LOAD_U32(simulation_clock + kSimulationFixedModeOffset) != 0;
+
+  if ((experiment_active || limit_realtime) && simulation_clock != 0) {
     const uint32_t tracked_clock =
         g_simulation_clock.load(std::memory_order_relaxed);
-    if (tracked_clock != simulation_clock) {
-      if (tracked_clock != 0) {
-        const uint32_t previous_original_step =
-            g_original_fixed_step_bits.load(
-                std::memory_order_relaxed);
-        REX_STORE_U32(tracked_clock + kSimulationFixedStepOffset,
-                      previous_original_step);
-        REXLOG_INFO(
-            "NARUTO_SIMULATION_STEP state=clock-restored "
-            "clock={:08X} original_bits={:08X}",
-            tracked_clock, previous_original_step);
-      }
-      const uint32_t original_step =
-          REX_LOAD_U32(simulation_clock + kSimulationFixedStepOffset);
-      g_original_fixed_step_bits.store(original_step,
-                                       std::memory_order_relaxed);
-      g_simulation_clock.store(simulation_clock, std::memory_order_release);
+    if (tracked_clock != simulation_clock && tracked_clock != 0) {
+      const uint32_t previous_original_step =
+          g_original_fixed_step_bits.load(std::memory_order_relaxed);
+      REX_STORE_U32(tracked_clock + kSimulationFixedStepOffset,
+                    previous_original_step);
       REXLOG_INFO(
-          "NARUTO_SIMULATION_STEP state=active clock={:08X} "
-          "original_bits={:08X} replacement_bits={:08X}",
-          simulation_clock, original_step, kSimulationStep60HzBits);
+          "NARUTO_SIMULATION_STEP state=clock-restored "
+          "clock={:08X} original_bits={:08X}",
+          tracked_clock, previous_original_step);
     }
-    REX_STORE_U32(simulation_clock + kSimulationFixedStepOffset,
-                  kSimulationStep60HzBits);
+
+    // Any value that is not the one this hook last wrote came from the title,
+    // which means the context changed its configured cadence.
+    const uint32_t current_step =
+        REX_LOAD_U32(simulation_clock + kSimulationFixedStepOffset);
+    const bool title_changed_step =
+        tracked_clock != simulation_clock ||
+        current_step != g_last_written_step_bits.load(std::memory_order_relaxed);
+
+    if (title_changed_step) {
+      g_original_fixed_step_bits.store(current_step, std::memory_order_relaxed);
+      g_simulation_clock.store(simulation_clock, std::memory_order_release);
+
+      // The title can rewrite this field every frame with a measured value.
+      // Rate limit so the trace stays readable and the log is never a
+      // real-time cost.
+      const auto now = std::chrono::steady_clock::now();
+      if (now - g_last_step_log >= std::chrono::milliseconds(500)) {
+        g_last_step_log = now;
+        REXLOG_INFO(
+            "NARUTO_SIMULATION_STEP state=title-step clock={:08X} "
+            "original_bits={:08X} original_hz={:.3f} suppressed={}",
+            simulation_clock, current_step,
+            StepBitsToSeconds(current_step) > 0.0f
+                ? 1.0 / StepBitsToSeconds(current_step)
+                : 0.0,
+            g_suppressed_step_changes.exchange(0, std::memory_order_relaxed));
+      } else {
+        g_suppressed_step_changes.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
+
+    const uint32_t original_step =
+        g_original_fixed_step_bits.load(std::memory_order_relaxed);
+    if (IsPlausibleStep(original_step)) {
+      // Nominal step for this frame. The experiment asks for the target rate;
+      // otherwise the title's own configured step is the ceiling.
+      double nominal = StepBitsToSeconds(original_step);
+      if (experiment_active) {
+        if (REXCVAR_GET(naruto_relative_simulation_step)) {
+          nominal = StepBitsToSeconds(original_step) * 0.5;
+        } else {
+          const double target = REXCVAR_GET(naruto_target_frame_rate);
+          if (target >= 1.0) {
+            nominal = 1.0 / target;
+          }
+        }
+      }
+
+      double step_seconds = nominal;
+      if (limit_realtime) {
+        // The step must track real time in both directions. Capping it at the
+        // nominal value made every frame slower than the target run in slow
+        // motion, which is what an open world that cannot yet sustain the
+        // target rate looked like. The only ceiling is a hitch guard, and the
+        // title's own maximum delta at +80 is the most faithful one.
+        double max_step = nominal * kStepCreditMaxNominalMultiple;
+        const uint32_t title_max_delta =
+            REX_LOAD_U32(simulation_clock + kSimulationMaxDeltaOffset);
+        if (IsPlausibleStep(title_max_delta)) {
+          max_step = std::max(
+              nominal, static_cast<double>(StepBitsToSeconds(title_max_delta)));
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (g_step_last_frame == std::chrono::steady_clock::time_point{}) {
+          g_step_credit_seconds = nominal;
+        } else {
+          g_step_credit_seconds +=
+              std::chrono::duration<double>(now - g_step_last_frame).count();
+        }
+        g_step_last_frame = now;
+
+        step_seconds = std::min(g_step_credit_seconds, max_step);
+        // A guest frame must always advance the world, or state machines
+        // driven by the step can stall.
+        step_seconds = std::max(step_seconds, nominal / 16.0);
+        g_step_credit_seconds =
+            std::max(0.0, g_step_credit_seconds - step_seconds);
+      }
+
+      const uint32_t replacement =
+          StepSecondsToBits(static_cast<float>(step_seconds));
+      REX_STORE_U32(simulation_clock + kSimulationFixedStepOffset, replacement);
+      g_last_written_step_bits.store(replacement, std::memory_order_relaxed);
+    }
   } else {
     const uint32_t tracked_clock =
         g_simulation_clock.exchange(0, std::memory_order_acq_rel);
@@ -1186,6 +1419,10 @@ extern "C" __attribute__((noinline)) REX_FUNC(sub_82BC8FA8) {
       const uint32_t original_step =
           g_original_fixed_step_bits.exchange(0,
                                               std::memory_order_relaxed);
+      g_last_written_step_bits.store(0, std::memory_order_relaxed);
+      // Re-arming must not repay the entire suspended interval in one step.
+      g_step_last_frame = std::chrono::steady_clock::time_point{};
+      g_step_credit_seconds = 0.0;
       REX_STORE_U32(tracked_clock + kSimulationFixedStepOffset,
                     original_step);
       REXLOG_INFO(
@@ -1196,6 +1433,69 @@ extern "C" __attribute__((noinline)) REX_FUNC(sub_82BC8FA8) {
   }
 
   __imp__sub_82BC8FA8(ctx, base);
+
+  if (simulation_clock != 0 && REXCVAR_GET(naruto_sim_cadence_telemetry)) {
+    const auto now = std::chrono::steady_clock::now();
+    if (g_cadence_start == std::chrono::steady_clock::time_point{}) {
+      g_cadence_start = now;
+    }
+    ++g_cadence_frames;
+    const double frame_raw_seconds = StepBitsToSeconds(
+        REX_LOAD_U32(simulation_clock + kSimulationRawDeltaOffset));
+    g_cadence_raw_seconds += frame_raw_seconds;
+    g_cadence_scaled_seconds += StepBitsToSeconds(
+        REX_LOAD_U32(simulation_clock + kSimulationScaledDeltaOffset));
+
+    if (g_cadence_previous_frame != std::chrono::steady_clock::time_point{}) {
+      const double interval_ms =
+          std::chrono::duration<double, std::milli>(
+              now - g_cadence_previous_frame)
+              .count();
+      if (g_cadence_min_interval_ms == 0.0 ||
+          interval_ms < g_cadence_min_interval_ms) {
+        g_cadence_min_interval_ms = interval_ms;
+      }
+      if (interval_ms > g_cadence_max_interval_ms) {
+        g_cadence_max_interval_ms = interval_ms;
+      }
+      if (interval_ms > 0.0) {
+        const double instant_speed =
+            frame_raw_seconds / (interval_ms / 1000.0);
+        if (instant_speed > g_cadence_peak_instant_speed) {
+          g_cadence_peak_instant_speed = instant_speed;
+        }
+      }
+    }
+    g_cadence_previous_frame = now;
+
+    const double wall_seconds =
+        std::chrono::duration<double>(now - g_cadence_start).count();
+    if (now - g_cadence_start >= kCadenceReportInterval) {
+      const double peak_fps = g_cadence_min_interval_ms > 0.0
+                                  ? 1000.0 / g_cadence_min_interval_ms
+                                  : 0.0;
+      REXLOG_INFO(
+          "NARUTO_SIM_CADENCE frames={} fps={:.2f} raw_speed={:.3f} "
+          "scaled_speed={:.3f} min_ms={:.2f} max_ms={:.2f} peak_fps={:.2f} "
+          "peak_speed={:.3f} fixed_mode={} step_bits={:08X} experiment={} "
+          "limit={}",
+          g_cadence_frames,
+          static_cast<double>(g_cadence_frames) / wall_seconds,
+          g_cadence_raw_seconds / wall_seconds,
+          g_cadence_scaled_seconds / wall_seconds, g_cadence_min_interval_ms,
+          g_cadence_max_interval_ms, peak_fps, g_cadence_peak_instant_speed,
+          REX_LOAD_U32(simulation_clock + kSimulationFixedModeOffset),
+          REX_LOAD_U32(simulation_clock + kSimulationFixedStepOffset),
+          experiment_active ? "active" : "off", limit_realtime ? "on" : "off");
+      g_cadence_frames = 0;
+      g_cadence_raw_seconds = 0.0;
+      g_cadence_scaled_seconds = 0.0;
+      g_cadence_min_interval_ms = 0.0;
+      g_cadence_max_interval_ms = 0.0;
+      g_cadence_peak_instant_speed = 0.0;
+      g_cadence_start = now;
+    }
+  }
 }
 
 REX_EXTERN(__imp__sub_8217AB20);

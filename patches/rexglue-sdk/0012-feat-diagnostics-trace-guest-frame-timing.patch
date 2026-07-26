@@ -1,7 +1,7 @@
 From c91f2b53a1018b779ed3b5d9d201412719cb73ca Mon Sep 17 00:00:00 2001
 From: Codex <codex@local>
 Date: Thu, 23 Jul 2026 01:08:10 -0300
-Subject: [PATCH 12/12] feat(diagnostics): trace guest frame timing
+Subject: [PATCH 12/16] feat(diagnostics): trace guest frame timing
 
 ---
  include/rex/diagnostics/guest_timing.h     |  74 ++++++
@@ -681,5 +681,3 @@ index 09c44a3..25a5b69 100644
      case WM_CHAR:
        OnKeyChar(e, destruction_receiver);
        break;
--- 
-2.55.0.windows.3

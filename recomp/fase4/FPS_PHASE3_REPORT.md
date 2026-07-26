@@ -2,6 +2,11 @@
 
 Date: 2026-07-24
 
+> **Historical report.** Phase 4 direct speed telemetry superseded the battle
+> diagnosis and resume point below. Battle is a fixed-timestep context that the
+> default port was already running near twice speed; the 60 FPS experiment was
+> masking that baseline defect. Continue from `FPS_PHASE4_REPORT.md`.
+
 ## Result
 
 The title's default 30 FPS cadence is quantized by the guest-visible vblank
