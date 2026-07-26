@@ -10,7 +10,7 @@ $ResolvedSdkDir = if ([IO.Path]::IsPathRooted($SdkDir)) {
     [IO.Path]::GetFullPath((Join-Path $ProjectRoot $SdkDir))
 }
 $Base = "2bdb97f95f154f32d281aaa08446ae007b8ca117"
-$ExpectedTree = "62e97f17f8e6cfb4d73905c5158aef1d8d292151"
+$ExpectedTree = "5a0710954c5f400b58bbba27c8448a255cdd91e4"
 $Repository = "https://github.com/rexglue/rexglue-sdk.git"
 $gitCandidates = @("C:/Program Files/Git/cmd/git.exe", "C:/Program Files/Git/bin/git.exe")
 $gitCommand = Get-Command git -ErrorAction SilentlyContinue

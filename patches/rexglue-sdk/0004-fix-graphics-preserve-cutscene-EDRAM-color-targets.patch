@@ -1,7 +1,7 @@
 From bcfda8ede3126614310a9acfa2af238a604ff1c5 Mon Sep 17 00:00:00 2001
 From: Codex <codex@local>
 Date: Tue, 21 Jul 2026 16:37:47 -0300
-Subject: [PATCH 4/6] fix(graphics): preserve cutscene EDRAM color targets
+Subject: [PATCH 04/16] fix(graphics): preserve cutscene EDRAM color targets
 
 ---
  src/graphics/util/draw_extent_estimator.cpp | 8 +++++++-
@@ -26,6 +26,3 @@ index 47d40f7..8bb422f 100644
                      "Execute unclipped draw vertex shader on CPU");
  
  REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu_with_scissor, false, "GPU",
--- 
-2.53.0.windows.3
-

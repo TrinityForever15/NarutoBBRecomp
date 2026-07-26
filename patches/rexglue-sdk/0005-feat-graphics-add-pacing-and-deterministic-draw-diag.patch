@@ -1,7 +1,7 @@
 From 560492c61539851b04d9d95a5c8c23a772bae1a2 Mon Sep 17 00:00:00 2001
 From: Codex <codex@local>
 Date: Tue, 21 Jul 2026 16:37:47 -0300
-Subject: [PATCH 5/6] feat(graphics): add pacing and deterministic draw
+Subject: [PATCH 05/16] feat(graphics): add pacing and deterministic draw
  diagnostics
 
 ---
@@ -448,6 +448,3 @@ index a40436e..d6870fc 100644
      uint64_t submission_current = GetCurrentSubmission();
      current_submission_wait_stage_masks_.clear();
      for (VkSemaphore semaphore : current_submission_wait_semaphores_) {
--- 
-2.53.0.windows.3
-

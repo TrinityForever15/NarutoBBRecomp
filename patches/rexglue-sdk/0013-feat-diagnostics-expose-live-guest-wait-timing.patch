@@ -1,0 +1,107 @@
+From c08d9caec55f0862f57273c98a9cd618a040c5f5 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Thu, 23 Jul 2026 20:29:05 -0300
+Subject: [PATCH 13/16] feat(diagnostics): expose live guest wait timing
+
+---
+ include/rex/diagnostics/guest_timing.h |  2 ++
+ src/system/guest_timing.cpp            | 30 ++++++++++++++++++++------
+ 2 files changed, 26 insertions(+), 6 deletions(-)
+
+diff --git a/include/rex/diagnostics/guest_timing.h b/include/rex/diagnostics/guest_timing.h
+index f66b8f5..15721d5 100644
+--- a/include/rex/diagnostics/guest_timing.h
++++ b/include/rex/diagnostics/guest_timing.h
+@@ -38,6 +38,7 @@ struct GuestTimingSample {
+   uint64_t longest_wait_ns = 0;
+   uint32_t longest_wait_object = 0;
+   uint32_t longest_wait_object_type = 0;
++  uint32_t longest_wait_caller = 0;
+   GuestWaitKind longest_wait_kind = GuestWaitKind::kObject;
+ 
+   uint32_t vblank_pulses = 0;
+@@ -64,6 +65,7 @@ GuestTimingSample EndGuestTimingScope(uint32_t scope_tag);
+ void RecordGuestWait(GuestWaitKind kind, uint32_t object_type,
+                      uint32_t guest_object, uint64_t duration_ns);
+ void RecordGuestVblankPulse();
++uint64_t GuestVblankPulseCount();
+ void RecordGuestVdSwap();
+ void RecordGuestTimebaseRead(uint32_t guest_pc);
+ 
+diff --git a/src/system/guest_timing.cpp b/src/system/guest_timing.cpp
+index 6963917..c32444a 100644
+--- a/src/system/guest_timing.cpp
++++ b/src/system/guest_timing.cpp
+@@ -36,6 +36,7 @@ struct TimingState {
+   uint64_t longest_wait_ns = 0;
+   uint32_t longest_wait_object = 0;
+   uint32_t longest_wait_object_type = 0;
++  uint32_t longest_wait_caller = 0;
+   GuestWaitKind longest_wait_kind = GuestWaitKind::kObject;
+   uint32_t vd_swap_calls = 0;
+   uint32_t timebase_reads = 0;
+@@ -95,8 +96,18 @@ uint32_t CurrentGuestThreadId() {
+   return thread ? thread->thread_id() : 0;
+ }
+ 
++uint32_t CurrentGuestCaller() {
++  auto* thread = system::XThread::GetCurrentThread();
++  if (!thread || !thread->thread_state() ||
++      !thread->thread_state()->context()) {
++    return 0;
++  }
++  return static_cast<uint32_t>(thread->thread_state()->context()->lr);
++}
++
+ void AddWait(TimingState& state, GuestWaitKind kind, uint32_t object_type,
+-             uint32_t guest_object, uint64_t duration_ns) {
++             uint32_t guest_object, uint32_t guest_caller,
++             uint64_t duration_ns) {
+   if (!state.active) {
+     return;
+   }
+@@ -111,6 +122,7 @@ void AddWait(TimingState& state, GuestWaitKind kind, uint32_t object_type,
+     state.longest_wait_ns = duration_ns;
+     state.longest_wait_object = guest_object;
+     state.longest_wait_object_type = object_type;
++    state.longest_wait_caller = guest_caller;
+     state.longest_wait_kind = kind;
+   }
+ }
+@@ -156,6 +168,7 @@ GuestTimingSample FinishState(TimingState& state) {
+   sample.longest_wait_ns = state.longest_wait_ns;
+   sample.longest_wait_object = state.longest_wait_object;
+   sample.longest_wait_object_type = state.longest_wait_object_type;
++  sample.longest_wait_caller = state.longest_wait_caller;
+   sample.longest_wait_kind = state.longest_wait_kind;
+   sample.vblank_pulses = static_cast<uint32_t>(
+       g_vblank_count.load(std::memory_order_relaxed) -
+@@ -244,18 +257,23 @@ void RecordGuestWait(GuestWaitKind kind, uint32_t object_type,
+     return;
+   }
+   const uint32_t thread_id = CurrentGuestThreadId();
++  const uint32_t guest_caller = CurrentGuestCaller();
+   if (IsFrameThread(thread_id)) {
+-    AddWait(g_frame_state, kind, object_type, guest_object, duration_ns);
++    AddWait(g_frame_state, kind, object_type, guest_object, guest_caller,
++            duration_ns);
+   }
+   if (g_scope_state.thread_id == thread_id) {
+-    AddWait(g_scope_state, kind, object_type, guest_object, duration_ns);
++    AddWait(g_scope_state, kind, object_type, guest_object, guest_caller,
++            duration_ns);
+   }
+ }
+ 
+ void RecordGuestVblankPulse() {
+-  if (GuestTimingTraceEnabled()) {
+-    g_vblank_count.fetch_add(1, std::memory_order_relaxed);
+-  }
++  g_vblank_count.fetch_add(1, std::memory_order_relaxed);
++}
++
++uint64_t GuestVblankPulseCount() {
++  return g_vblank_count.load(std::memory_order_relaxed);
+ }
+ 
+ void RecordGuestVdSwap() {

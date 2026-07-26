@@ -1,0 +1,101 @@
+From d606af4923666d3284b8707f3e3465d57a6806a5 Mon Sep 17 00:00:00 2001
+From: Naruto Recomp <local@invalid>
+Date: Sat, 25 Jul 2026 18:00:40 -0300
+Subject: [PATCH 15/16] feat(graphics): derive Naruto pacer target from a cvar
+
+A fixed-timestep guest context takes its simulation speed from the achieved
+presentation cadence, so the pacer target and the simulation step have to be
+derived from the same number. The previous hard coded 61.5 Hz internal target
+against a 1/60 step produced a permanent 2.5 percent overspeed in battle.
+
+Expose the target and the scheduling lead, and scale the pacing threshold with
+the target so a higher target does not silently disable pacing. Defaults
+reproduce the previously validated cadence exactly.
+---
+ src/graphics/command_processor.cpp | 52 ++++++++++++++++++++++++------
+ 1 file changed, 42 insertions(+), 10 deletions(-)
+
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index a44a1df..de03385 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -42,6 +42,38 @@ REXCVAR_DEFINE_BOOL(naruto_stable_60fps_pacing, true, "GPU",
+                     "Smooth bursty 60 FPS guest swaps with a two-frame host "
+                     "presentation buffer. 30 FPS sections are left untouched.");
+ 
++// Fixed-timestep guest contexts derive simulation speed directly from the
++// achieved presentation cadence, so the pacer target and the simulation step
++// must agree. Exposing the target makes that pairing tunable from a launcher
++// and makes higher target rates a parameter change rather than a code change.
++REXCVAR_DEFINE_DOUBLE(naruto_pacing_target_hz, 60.0, "GPU",
++                      "Presentation cadence the Naruto pacer aims for. Must "
++                      "match the simulation step used by fixed-timestep "
++                      "contexts or those contexts run fast or slow.");
++
++// Waiting and command submission cost real time, so the scheduler must aim
++// slightly early to land on the requested cadence. The historical build hard
++// coded a 61.5 Hz internal target against a 60 Hz goal, which is this offset.
++REXCVAR_DEFINE_DOUBLE(naruto_pacing_lead_ms, 0.406, "GPU",
++                      "Time the pacer aims ahead of the target interval to "
++                      "absorb wait and submission cost.");
++
++namespace {
++
++// Scheduling interval for one presentation, in host ticks. At the default
++// 60 Hz target and 0.406 ms lead this reproduces the previously validated
++// 61.5 Hz internal cadence exactly.
++uint64_t NarutoPacingIntervalTicks(uint64_t tick_frequency) {
++  const double target_hz = std::max(1.0, REXCVAR_GET(naruto_pacing_target_hz));
++  const double lead_seconds =
++      std::max(0.0, REXCVAR_GET(naruto_pacing_lead_ms)) / 1000.0;
++  const double interval_seconds = std::max(1.0e-4, 1.0 / target_hz - lead_seconds);
++  return std::max(uint64_t(1),
++                  uint64_t(double(tick_frequency) * interval_seconds));
++}
++
++}  // namespace
++
+ REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
+                     "Refresh page-valid state from GPU-written memory at frame end. "
+                     "Disable for minor CPU overhead reduction, but may break memory coherency.")
+@@ -1164,9 +1196,14 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
+         double(naruto_rate_window_rendered_swaps) *
+         double(naruto_tick_frequency) / elapsed_ticks;
+     // Naruto often swaps twice per rendered cutscene frame. Only pace when the
+-    // draw-bearing swaps themselves are running at 60 FPS; otherwise sleeping
+-    // the GPU command thread can expose an intermediate black post-effect.
+-    const bool should_pace = incoming_fps >= 50.0 && rendered_fps >= 50.0;
++    // draw-bearing swaps themselves are near the target rate; otherwise
++    // sleeping the GPU command thread can expose an intermediate black
++    // post-effect. The threshold follows the target so a higher target does
++    // not silently disable pacing.
++    const double pacing_threshold_fps =
++        std::max(1.0, REXCVAR_GET(naruto_pacing_target_hz) * (5.0 / 6.0));
++    const bool should_pace = incoming_fps >= pacing_threshold_fps &&
++                             rendered_fps >= pacing_threshold_fps;
+     const bool was_pacing = naruto_pacing_enabled;
+     const int rate_classification = should_pace ? 1 : 0;
+     if (rate_classification != naruto_last_rate_classification) {
+@@ -1178,8 +1215,7 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
+     naruto_pacing_enabled = should_pace;
+     if (naruto_pacing_enabled && !was_pacing) {
+       const uint64_t interval_ticks =
+-          std::max(uint64_t(1),
+-                   uint64_t(double(naruto_tick_frequency) / 61.5));
++          NarutoPacingIntervalTicks(naruto_tick_frequency);
+       naruto_next_present_tick = naruto_now + interval_ticks * 2;
+     } else if (!naruto_pacing_enabled) {
+       naruto_next_present_tick = 0;
+@@ -1191,11 +1227,7 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
+ 
+   if (REXCVAR_GET(naruto_stable_60fps_pacing) && naruto_pacing_enabled) {
+     const uint64_t interval_ticks =
+-        // The wait plus command submission adds roughly 0.4 ms on this
+-        // runtime. A 61.5 Hz internal target compensates that cost and yields
+-        // an observed cadence close to 60 Hz without changing guest time.
+-        std::max(uint64_t(1),
+-                 uint64_t(double(naruto_tick_frequency) / 61.5));
++        NarutoPacingIntervalTicks(naruto_tick_frequency);
+     // If the producer has genuinely stopped for more than the buffered span,
+     // present the newest frame immediately and start a fresh buffer. Never
+     // replay late frames in a burst.

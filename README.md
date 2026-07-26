@@ -23,15 +23,51 @@ complete or stable playthrough. The following items are still open:
 
 - validate the end of the Orochimaru battle after adding guest function
   `0x8215D000`;
-- capture and fix intermittent/missing audio in the exact affected scenes;
-- unlock the open world from its active 30 FPS render-queue synchronization
-  while preserving simulation, animation, physics, menus, and cutscenes.
+- finish the cutscene audio fix: the mechanism is measured and understood, but
+  intermittency and repeated fragments remain;
+- validate combat timing at 60 FPS, and decide whether higher targets are
+  viable at all;
+- improve scene-dependent performance and validate battles, cutscenes, and a
+  long continuous playthrough.
 
-There is no approved open-world 60 FPS mode yet. The old `1/30 -> 1/60`
-constant experiment did not work and has been removed.
+### Frame rate
+
+Simulation speed is now measured directly, as simulated seconds per real
+second. That measurement found that **battle is a fixed-timestep context which
+the port does not frame-limit**, so the default build had been running battles
+at roughly twice speed. Granting each frame no more world time than real time
+has delivered corrects this, and sampled battle measures a 1.000 speed median at
+60 FPS. Menus and the open world use a variable timestep and were already
+correct at any rate.
+
+A 60 FPS mode exists and arms itself at boot. The simulation step, the
+presentation pacer target and the guest vblank multiplier all derive from one
+target rate, so they cannot disagree. A 120 target reaches a 119.37 FPS median
+at correct speed and is marked experimental, because a correct speed factor
+says nothing about logic counted in frames, which fighting games commonly use
+for combo windows, invulnerability and input buffering. No full battle has been
+validated against that.
+
+### Audio
+
+Cutscene audio is measured per stream rather than judged by listening. Inside a
+reproducible failing scene, decode errors rise from 6.6% to 25.3% of attempts
+while the output queue, underruns and waveform discontinuities stay unchanged,
+which excludes the output path. Every error is a frame split across two input
+buffers whose continuation the title has not supplied, and the title keeps one
+input buffer valid at a time, so holding the consumed buffer deadlocks against
+its refill. Varying the output queue depth eight-fold moved the result by 1%,
+so a different audio backend would not address this.
+
+Treating that case as a bounded wait removes every decode error and largely
+removes the hiss. Retaining the partial frame across a buffer swap is the
+remaining work; releasing the buffer without retaining it soft-locks the scene
+and is rejected.
 
 See [the current status](docs/STATUS.md), [test matrix](docs/TEST_MATRIX.md),
-and [technical decisions](docs/TECHNICAL_DECISIONS.md) before changing code.
+[technical decisions](docs/TECHNICAL_DECISIONS.md),
+[phase-4 FPS report](recomp/fase4/FPS_PHASE4_REPORT.md), and
+[audio plan](recomp/fase4/AUDIO_PLAN.md) before changing code.
 
 ## What has been independently verified?
 

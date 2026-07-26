@@ -1,7 +1,7 @@
 From 7e7b654f9a69932aa567722c176b96cba3a59f3a Mon Sep 17 00:00:00 2001
 From: Codex <codex@local>
 Date: Wed, 22 Jul 2026 23:33:56 -0300
-Subject: [PATCH 11/11] feat(audio): summarize upstream silence without
+Subject: [PATCH 11/16] feat(audio): summarize upstream silence without
  realtime logging
 
 ---
@@ -199,6 +199,3 @@ index 1de9235..047cdb8 100644
              }
              break;
            case 6:
--- 
-2.55.0.windows.3
-

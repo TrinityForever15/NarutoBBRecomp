@@ -2,8 +2,8 @@
 
 - Upstream: <https://github.com/rexglue/rexglue-sdk.git>
 - Pinned base: `2bdb97f95f154f32d281aaa08446ae007b8ca117` (local v0.8.0 base)
-- Validated local head: `c91f2b53a1018b779ed3b5d9d201412719cb73ca`
-- Expected resulting tree: `62e97f17f8e6cfb4d73905c5158aef1d8d292151`
+- Validated local head: `5a89b1adcab5d4295fd20c5c3e29b717cfcf11ad`
+- Expected resulting tree: `5a0710954c5f400b58bbba27c8448a255cdd91e4`
 - Local development branch: `narutobb-integration`
 
 Patch order:
@@ -20,7 +20,16 @@ Patch order:
 10. revert the balanced downmix after a manual auditory regression;
 11. add a passive upstream-silence summary with no real-time logging;
 12. add guest frame/scope timing, waits, vblank, `VdSwap`, timebase sources,
-    and correct F10 system-key delivery on Windows.
+    and correct F10 system-key delivery on Windows;
+13. expose the live guest-vblank counter and guest wait caller attribution for
+    controlled runtime experiments;
+14. support a controlled guest-vblank rate multiplier, precise sub-refresh
+    waits, and worker timing for reversible title experiments;
+15. derive the Naruto presentation pacer target from a cvar so it cannot
+    disagree with the simulation step of a fixed-timestep context;
+16. add per-stream XMA continuity and output flow telemetry plus opt-in
+    split-buffer stall/release diagnostics, accumulated outside the real-time
+    audio callback.
 
 Reconstruct from the pinned upstream base:
 

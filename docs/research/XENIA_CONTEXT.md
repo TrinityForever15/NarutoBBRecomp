@@ -31,8 +31,9 @@ The native project now has stronger title-specific evidence:
 - the opening native crash was mapped to unsafe FFmpeg flush of an unopened XMA
   context;
 - synchronous XMA did not produce a proven auditory advantage;
-- the open-world 30 FPS limit was measured as active render-queue polling, not a
-  generic emulator performance limit.
+- the open-world 30 FPS cadence was ultimately proven to be guest-vblank
+  quantization; the earlier active render-queue observation was synchronization
+  evidence, not an irreducible workload.
 
 Therefore, future work should follow `docs/STATUS.md`,
 `docs/TECHNICAL_DECISIONS.md`, and the phase reports rather than copy an Xenia

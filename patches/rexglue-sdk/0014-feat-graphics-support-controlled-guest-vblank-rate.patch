@@ -1,0 +1,354 @@
+From 6fda9628c05eafb0b6628aae02bfdc7a264f51f2 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Thu, 23 Jul 2026 22:11:16 -0300
+Subject: [PATCH 14/16] feat(graphics): support controlled guest vblank rate
+
+---
+ include/rex/diagnostics/guest_timing.h | 18 ++++++
+ include/rex/thread.h                   | 11 ++++
+ src/core/threading_posix.cpp           |  4 ++
+ src/core/threading_win.cpp             | 45 +++++++++++++++
+ src/graphics/graphics_system.cpp       | 48 +++++++++++++++-
+ src/system/guest_timing.cpp            | 76 ++++++++++++++++++++++++++
+ 6 files changed, 200 insertions(+), 2 deletions(-)
+
+diff --git a/include/rex/diagnostics/guest_timing.h b/include/rex/diagnostics/guest_timing.h
+index 15721d5..dfdacec 100644
+--- a/include/rex/diagnostics/guest_timing.h
++++ b/include/rex/diagnostics/guest_timing.h
+@@ -49,6 +49,15 @@ struct GuestTimingSample {
+   size_t time_source_site_count = 0;
+ };
+ 
++struct GuestVblankWorkerTiming {
++  uint64_t samples = 0;
++  uint64_t total_ns = 0;
++  uint64_t interrupt_ns = 0;
++  uint64_t max_total_ns = 0;
++  uint64_t max_interrupt_ns = 0;
++  uint64_t coalesced_intervals = 0;
++};
++
+ void SetGuestTimingTraceEnabled(bool enabled);
+ bool GuestTimingTraceEnabled();
+ 
+@@ -66,6 +75,15 @@ void RecordGuestWait(GuestWaitKind kind, uint32_t object_type,
+                      uint32_t guest_object, uint64_t duration_ns);
+ void RecordGuestVblankPulse();
+ uint64_t GuestVblankPulseCount();
++// Runtime experiments may temporarily accelerate the guest-visible vblank
++// clock without changing the host presentation rate. The value is atomic so
++// title hooks and the vblank worker may change/read it concurrently.
++void SetGuestVblankRateMultiplier(uint32_t multiplier);
++uint32_t GuestVblankRateMultiplier();
++void RecordGuestVblankWorkerTiming(uint64_t total_ns,
++                                   uint64_t interrupt_ns);
++void RecordGuestVblankCoalescedIntervals(uint64_t intervals);
++GuestVblankWorkerTiming ConsumeGuestVblankWorkerTiming();
+ void RecordGuestVdSwap();
+ void RecordGuestTimebaseRead(uint32_t guest_pc);
+ 
+diff --git a/include/rex/thread.h b/include/rex/thread.h
+index 30b207d..8eefb44 100644
+--- a/include/rex/thread.h
++++ b/include/rex/thread.h
+@@ -118,6 +118,17 @@ void Sleep(std::chrono::duration<Rep, Period> duration) {
+   Sleep(std::chrono::duration_cast<std::chrono::microseconds>(duration));
+ }
+ 
++// Sleeps using the most precise host timer available. This is intended for
++// sub-frame scheduling where the platform's ordinary sleep granularity may be
++// longer than the requested duration. Falls back to Sleep when a high-
++// resolution timer is unavailable.
++void SleepHighResolution(std::chrono::microseconds duration);
++template <typename Rep, typename Period>
++void SleepHighResolution(std::chrono::duration<Rep, Period> duration) {
++  SleepHighResolution(
++      std::chrono::duration_cast<std::chrono::microseconds>(duration));
++}
++
+ enum class SleepResult {
+   kSuccess,
+   kAlerted,
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index f2f172f..e2b862a 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -171,6 +171,10 @@ void Sleep(std::chrono::microseconds duration) {
+   } while (ret == -1 && errno == EINTR);
+ }
+ 
++void SleepHighResolution(std::chrono::microseconds duration) {
++  Sleep(duration);
++}
++
+ // TODO(bwrsandman) Implement by allowing alert interrupts from IO operations
+ thread_local bool alertable_state_ = false;
+ bool DispatchCurrentThreadUserCallback();
+diff --git a/src/core/threading_win.cpp b/src/core/threading_win.cpp
+index 896dfec..e1eb997 100644
+--- a/src/core/threading_win.cpp
++++ b/src/core/threading_win.cpp
+@@ -101,6 +101,51 @@ void Sleep(std::chrono::microseconds duration) {
+   }
+ }
+ 
++namespace {
++
++class HighResolutionSleepTimer {
++ public:
++  HighResolutionSleepTimer()
++      : handle_(CreateWaitableTimerExW(
++            nullptr, nullptr,
++            0x00000002,  // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
++            TIMER_MODIFY_STATE | SYNCHRONIZE)) {}
++
++  ~HighResolutionSleepTimer() {
++    if (handle_) {
++      CloseHandle(handle_);
++    }
++  }
++
++  HANDLE handle() const { return handle_; }
++
++ private:
++  HANDLE handle_ = nullptr;
++};
++
++}  // namespace
++
++void SleepHighResolution(std::chrono::microseconds duration) {
++  if (duration.count() < 100) {
++    MaybeYield();
++    return;
++  }
++
++  static thread_local HighResolutionSleepTimer timer;
++  if (!timer.handle()) {
++    Sleep(duration);
++    return;
++  }
++
++  LARGE_INTEGER due_time;
++  due_time.QuadPart = -duration.count() * 10;
++  if (!SetWaitableTimerEx(timer.handle(), &due_time, 0, nullptr, nullptr,
++                          nullptr, 0) ||
++      WaitForSingleObject(timer.handle(), INFINITE) != WAIT_OBJECT_0) {
++    Sleep(duration);
++  }
++}
++
+ SleepResult AlertableSleep(std::chrono::microseconds duration) {
+   if (SleepEx(static_cast<DWORD>(duration.count() / 1000), TRUE) == WAIT_IO_COMPLETION) {
+     return SleepResult::kAlerted;
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index e1b72a9..eb4ef37 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -13,6 +13,7 @@
+ 
+ #include <algorithm>
+ #include <cctype>
++#include <chrono>
+ #include <cstdint>
+ #include <functional>
+ #include <memory>
+@@ -164,8 +165,13 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+         const double refresh_rate_hz =
+             std::max(1.0, double(float(video_mode.refresh_rate)));
+         uint64_t guest_tick_frequency = chrono::Clock::guest_tick_frequency();
+-        uint64_t vsync_interval_ticks =
++        const uint64_t base_vsync_interval_ticks =
+             std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / refresh_rate_hz));
++        uint32_t applied_vblank_rate_multiplier =
++            diagnostics::GuestVblankRateMultiplier();
++        uint64_t vsync_interval_ticks = std::max(
++            uint64_t(1),
++            base_vsync_interval_ticks / applied_vblank_rate_multiplier);
+         uint64_t no_vsync_interval_ticks = std::max(uint64_t(1), guest_tick_frequency / 1000);
+         uint64_t next_frame_time =
+             chrono::Clock::QueryGuestTickCount() + vsync_interval_ticks;
+@@ -173,6 +179,18 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+             std::max(uint64_t(1), guest_tick_frequency / 2000);  // 0.5 ms.
+         while (vsync_worker_running_) {
+           uint64_t current_time = chrono::Clock::QueryGuestTickCount();
++          const uint32_t requested_vblank_rate_multiplier =
++              diagnostics::GuestVblankRateMultiplier();
++          if (requested_vblank_rate_multiplier !=
++              applied_vblank_rate_multiplier) {
++            applied_vblank_rate_multiplier = requested_vblank_rate_multiplier;
++            vsync_interval_ticks = std::max(
++                uint64_t(1), base_vsync_interval_ticks /
++                                 applied_vblank_rate_multiplier);
++            // Rephase on a live rate change so restoring the default does not
++            // emit a stale accelerated pulse or wait on the old interval.
++            next_frame_time = current_time + vsync_interval_ticks;
++          }
+           if (REXCVAR_GET(vsync) && REXCVAR_GET(precise_vblank)) {
+             if (current_time >= next_frame_time) {
+               // A real display doesn't deliver several old vertical blanks at
+@@ -189,6 +207,10 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+               const uint64_t completed_time = chrono::Clock::QueryGuestTickCount();
+               const uint64_t elapsed_intervals =
+                   (completed_time - next_frame_time) / vsync_interval_ticks + 1;
++              if (elapsed_intervals > 1) {
++                diagnostics::RecordGuestVblankCoalescedIntervals(
++                    elapsed_intervals - 1);
++              }
+               next_frame_time += elapsed_intervals * vsync_interval_ticks;
+               continue;
+             }
+@@ -198,7 +220,17 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
+               const uint64_t sleep_ticks = remaining_ticks - precision_guard_ticks;
+               const uint64_t sleep_microseconds =
+                   std::max(uint64_t(1000), sleep_ticks * 1000000 / guest_tick_frequency);
+-              rex::thread::Sleep(std::chrono::microseconds(sleep_microseconds));
++              if (applied_vblank_rate_multiplier > 1) {
++                // The ordinary Windows sleep granularity may exceed an 8.3 ms
++                // interval and silently coalesce accelerated guest vblanks.
++                // Keep the default 60 Hz path unchanged, but use a precise
++                // timer while an explicit rate experiment is active.
++                rex::thread::SleepHighResolution(
++                    std::chrono::microseconds(sleep_microseconds));
++              } else {
++                rex::thread::Sleep(
++                    std::chrono::microseconds(sleep_microseconds));
++              }
+             } else {
+               rex::thread::MaybeYield();
+             }
+@@ -370,6 +402,7 @@ void GraphicsSystem::MarkVblank() {
+   // TODO: Enable profiling once ported
+   // SCOPE_profile_cpu_f("gpu");
+ 
++  const auto total_start = std::chrono::steady_clock::now();
+   diagnostics::RecordGuestVblankPulse();
+ 
+   // Increment vblank counter (so the game sees us making progress).
+@@ -380,7 +413,18 @@ void GraphicsSystem::MarkVblank() {
+   // TODO(benvanik): we shouldn't need to do the dispatch here, but there's
+   //     something wrong and the CP will block waiting for code that
+   //     needs to be run in the interrupt.
++  const auto interrupt_start = std::chrono::steady_clock::now();
+   DispatchInterruptCallback(0, 2);
++  const auto completed = std::chrono::steady_clock::now();
++  diagnostics::RecordGuestVblankWorkerTiming(
++      static_cast<uint64_t>(
++          std::chrono::duration_cast<std::chrono::nanoseconds>(completed -
++                                                               total_start)
++              .count()),
++      static_cast<uint64_t>(
++          std::chrono::duration_cast<std::chrono::nanoseconds>(completed -
++                                                               interrupt_start)
++              .count()));
+ }
+ 
+ void GraphicsSystem::ClearCaches() {
+diff --git a/src/system/guest_timing.cpp b/src/system/guest_timing.cpp
+index c32444a..0f8a305 100644
+--- a/src/system/guest_timing.cpp
++++ b/src/system/guest_timing.cpp
+@@ -60,6 +60,13 @@ struct TimingState {
+ std::atomic<bool> g_enabled{false};
+ std::atomic<uint32_t> g_frame_thread_id{0};
+ std::atomic<uint64_t> g_vblank_count{0};
++std::atomic<uint32_t> g_vblank_rate_multiplier{1};
++std::atomic<uint64_t> g_vblank_worker_samples{0};
++std::atomic<uint64_t> g_vblank_worker_total_ns{0};
++std::atomic<uint64_t> g_vblank_worker_interrupt_ns{0};
++std::atomic<uint64_t> g_vblank_worker_max_total_ns{0};
++std::atomic<uint64_t> g_vblank_worker_max_interrupt_ns{0};
++std::atomic<uint64_t> g_vblank_worker_coalesced_intervals{0};
+ TimingState g_frame_state;
+ thread_local TimingState g_scope_state;
+ 
+@@ -127,6 +134,24 @@ void AddWait(TimingState& state, GuestWaitKind kind, uint32_t object_type,
+   }
+ }
+ 
++void UpdateAtomicMax(std::atomic<uint64_t>& target, uint64_t value) {
++  uint64_t current = target.load(std::memory_order_relaxed);
++  while (current < value &&
++         !target.compare_exchange_weak(current, value,
++                                       std::memory_order_relaxed)) {
++  }
++}
++
++void ResetGuestVblankWorkerTiming() {
++  g_vblank_worker_samples.store(0, std::memory_order_relaxed);
++  g_vblank_worker_total_ns.store(0, std::memory_order_relaxed);
++  g_vblank_worker_interrupt_ns.store(0, std::memory_order_relaxed);
++  g_vblank_worker_max_total_ns.store(0, std::memory_order_relaxed);
++  g_vblank_worker_max_interrupt_ns.store(0, std::memory_order_relaxed);
++  g_vblank_worker_coalesced_intervals.store(0,
++                                             std::memory_order_relaxed);
++}
++
+ void AddTimebaseRead(TimingState& state, uint32_t guest_pc) {
+   if (!state.active) {
+     return;
+@@ -189,6 +214,7 @@ bool IsFrameThread(uint32_t thread_id) {
+ }  // namespace
+ 
+ void SetGuestTimingTraceEnabled(bool enabled) {
++  ResetGuestVblankWorkerTiming();
+   g_enabled.store(enabled, std::memory_order_release);
+   if (!enabled) {
+     g_frame_state.active = false;
+@@ -276,6 +302,56 @@ uint64_t GuestVblankPulseCount() {
+   return g_vblank_count.load(std::memory_order_relaxed);
+ }
+ 
++void SetGuestVblankRateMultiplier(uint32_t multiplier) {
++  g_vblank_rate_multiplier.store(std::clamp(multiplier, 1u, 4u),
++                                 std::memory_order_release);
++}
++
++uint32_t GuestVblankRateMultiplier() {
++  return g_vblank_rate_multiplier.load(std::memory_order_acquire);
++}
++
++void RecordGuestVblankWorkerTiming(uint64_t total_ns,
++                                   uint64_t interrupt_ns) {
++  if (!GuestTimingTraceEnabled()) {
++    return;
++  }
++  g_vblank_worker_samples.fetch_add(1, std::memory_order_relaxed);
++  g_vblank_worker_total_ns.fetch_add(total_ns, std::memory_order_relaxed);
++  g_vblank_worker_interrupt_ns.fetch_add(interrupt_ns,
++                                         std::memory_order_relaxed);
++  UpdateAtomicMax(g_vblank_worker_max_total_ns, total_ns);
++  UpdateAtomicMax(g_vblank_worker_max_interrupt_ns, interrupt_ns);
++}
++
++void RecordGuestVblankCoalescedIntervals(uint64_t intervals) {
++  if (GuestTimingTraceEnabled()) {
++    g_vblank_worker_coalesced_intervals.fetch_add(
++        intervals, std::memory_order_relaxed);
++  }
++}
++
++GuestVblankWorkerTiming ConsumeGuestVblankWorkerTiming() {
++  return {
++      .samples =
++          g_vblank_worker_samples.exchange(0, std::memory_order_relaxed),
++      .total_ns =
++          g_vblank_worker_total_ns.exchange(0, std::memory_order_relaxed),
++      .interrupt_ns =
++          g_vblank_worker_interrupt_ns.exchange(0,
++                                                 std::memory_order_relaxed),
++      .max_total_ns =
++          g_vblank_worker_max_total_ns.exchange(0,
++                                                 std::memory_order_relaxed),
++      .max_interrupt_ns =
++          g_vblank_worker_max_interrupt_ns.exchange(
++              0, std::memory_order_relaxed),
++      .coalesced_intervals =
++          g_vblank_worker_coalesced_intervals.exchange(
++              0, std::memory_order_relaxed),
++  };
++}
++
+ void RecordGuestVdSwap() {
+   if (!GuestTimingTraceEnabled()) {
+     return;

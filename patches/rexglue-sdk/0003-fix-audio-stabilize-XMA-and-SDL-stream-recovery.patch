@@ -1,7 +1,7 @@
 From bf5bb466a1c1d03ee4958d5c275fd54f018cb13f Mon Sep 17 00:00:00 2001
 From: Codex <codex@local>
 Date: Tue, 21 Jul 2026 16:37:47 -0300
-Subject: [PATCH 3/6] fix(audio): stabilize XMA and SDL stream recovery
+Subject: [PATCH 03/16] fix(audio): stabilize XMA and SDL stream recovery
 
 ---
  include/rex/audio/conversion.h           |  44 +++++++
@@ -407,6 +407,3 @@ index 451eb47..aa3aa59 100644
  }
  
  void XmaContext::Disable() {
--- 
-2.53.0.windows.3
-

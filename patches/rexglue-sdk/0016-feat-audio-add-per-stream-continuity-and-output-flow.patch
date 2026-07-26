@@ -1,0 +1,701 @@
+From 5a89b1adcab5d4295fd20c5c3e29b717cfcf11ad Mon Sep 17 00:00:00 2001
+From: Naruto Recomp <local@invalid>
+Date: Sat, 25 Jul 2026 18:51:38 -0300
+Subject: [PATCH 16/16] feat(audio): add per-stream continuity and output flow
+ telemetry
+
+Cutscene audio defects have never been captured with instrumentation, which is
+why several audio scenarios have stayed pending. Add the measurement first.
+
+Per XMA context, accumulate decoded frames, buffer swaps, loop rewinds, decode
+errors and decodes that restart from an offset already covered since the last
+swap. Decoded audio seconds over real seconds gives a fill ratio: a healthy
+stream reports 1.0, a starving one reports less, and a stream repeating a
+section stays near 1.0 while offset repeats climb, which separates repetition
+from starvation without guessing.
+
+On the output side, count queue depth, starved chunks and waveform
+discontinuities at buffer seams, measured before concealment smooths them.
+
+All counters are incremented under locks the audio paths already hold, and all
+formatting happens on the decoder or audio worker thread. Nothing is added to
+the real-time callback, because periodic I/O there was already identified as a
+source of dropouts and removed once.
+
+Both reports are disabled by default.
+---
+ include/rex/audio/audio_driver.h         |   6 +
+ include/rex/audio/audio_system.h         |   6 +-
+ include/rex/audio/sdl/sdl_audio_driver.h |  27 +++++
+ include/rex/audio/xma/context.h          |  85 +++++++++++++-
+ src/audio/audio_system.cpp               |  35 ++++++
+ src/audio/sdl/sdl_audio_driver.cpp       |  58 ++++++++++
+ src/audio/xma_context.cpp                | 141 +++++++++++++++++++++++
+ src/audio/xma_decoder.cpp                |  58 ++++++++++
+ 8 files changed, 414 insertions(+), 2 deletions(-)
+
+diff --git a/include/rex/audio/audio_driver.h b/include/rex/audio/audio_driver.h
+index 37ccbf2..2cfb573 100644
+--- a/include/rex/audio/audio_driver.h
++++ b/include/rex/audio/audio_driver.h
+@@ -23,6 +23,12 @@ class AudioDriver {
+ 
+   virtual void SubmitFrame(uint32_t samples_ptr) = 0;
+ 
++  // Called periodically from the audio worker thread so a driver can report
++  // output-side flow counters. Keeping it here rather than downcasting in the
++  // audio system avoids making the generic system aware of a specific backend.
++  // Implementations must not be called from a real-time callback.
++  virtual void ReportFlowTelemetry() {}
++
+  protected:
+   inline uint8_t* TranslatePhysical(uint32_t guest_address) const {
+     return memory_->TranslatePhysical(guest_address);
+diff --git a/include/rex/audio/audio_system.h b/include/rex/audio/audio_system.h
+index 33fd32c..c9afdff 100644
+--- a/include/rex/audio/audio_system.h
++++ b/include/rex/audio/audio_system.h
+@@ -66,7 +66,11 @@ class AudioSystem : public system::IAudioSystem {
+                                 AudioDriver** out_driver) = 0;
+   virtual void DestroyDriver(AudioDriver* driver) = 0;
+ 
+-  static constexpr size_t kMaximumQueuedFrames = 64;
++  // Upper bound for audio_maxqframes. Raised above the historical 64 only so
++  // the cvar can be varied in both directions when testing whether output
++  // backpressure delays the guest thread that feeds XMA input buffers. The
++  // default remains 64; a larger value costs about 6 KB per frame.
++  static constexpr size_t kMaximumQueuedFrames = 256;
+ 
+   memory::Memory* memory_ = nullptr;
+   runtime::FunctionDispatcher* function_dispatcher_ = nullptr;
+diff --git a/include/rex/audio/sdl/sdl_audio_driver.h b/include/rex/audio/sdl/sdl_audio_driver.h
+index 60903b7..8ecb19c 100644
+--- a/include/rex/audio/sdl/sdl_audio_driver.h
++++ b/include/rex/audio/sdl/sdl_audio_driver.h
+@@ -33,6 +33,26 @@ class SDLAudioDriver : public AudioDriver {
+   void SubmitFrame(uint32_t frame_ptr) override;
+   void Shutdown();
+ 
++  // Output-side flow telemetry. The callback only increments these; the
++  // formatting and logging happen on the audio worker thread, because periodic
++  // I/O inside the real-time callback was already identified as a source of
++  // dropouts and removed once.
++  struct FlowTelemetry {
++    uint64_t callbacks = 0;
++    uint64_t queued_sum = 0;
++    uint32_t queued_min = 0xFFFFFFFF;
++    uint64_t underrun_chunks = 0;
++    // Buffer boundaries where the first sample jumps away from the previous
++    // last sample by more than kDiscontinuityThreshold. This is the crackle
++    // detector, and it costs one subtraction per channel per buffer.
++    uint64_t discontinuity_events = 0;
++    float max_discontinuity = 0.0f;
++  };
++
++  // Returns counters accumulated since the previous call and resets them.
++  FlowTelemetry DrainFlowTelemetry();
++  void ReportFlowTelemetry() override;
++
+  protected:
+   static void SDLCallback(void* userdata, SDL_AudioStream* stream, int additional_amount,
+                           int total_amount);
+@@ -70,6 +90,13 @@ class SDLAudioDriver : public AudioDriver {
+   // back in on the first frame that follows the gap.
+   static const uint32_t kConcealFadeSamples = 64;  // ~1.3 ms at 48 kHz
+   std::array<float, frame_channels_> last_samples_ = {};
++
++  // A step this large between two adjacent samples is not musical content at
++  // 48 kHz; it is the waveform discontinuity that is heard as a click.
++  static constexpr float kDiscontinuityThreshold = 0.25f;
++  // Guarded by frames_mutex_, which the callback already holds where these are
++  // incremented.
++  FlowTelemetry flow_telemetry_ = {};
+   // Start in refill mode too: do not send the first partially produced XMA
+   // frame straight to the device, as that creates the same startup crackle as
+   // an in-game underrun.
+diff --git a/include/rex/audio/xma/context.h b/include/rex/audio/xma/context.h
+index f6d5975..9fd20d8 100644
+--- a/include/rex/audio/xma/context.h
++++ b/include/rex/audio/xma/context.h
+@@ -217,6 +217,73 @@ class XmaContext {
+   }
+   void set_is_enabled(bool is_enabled) { is_enabled_.store(is_enabled, std::memory_order_release); }
+ 
++  // Continuity telemetry for one stream. Every field is accumulated inside
++  // Work() on the decoder worker thread and drained by that same thread, so
++  // this never touches the real-time audio callback.
++  struct Telemetry {
++    uint64_t decoded_frames = 0;
++    uint64_t decode_errors = 0;
++    // The two places that raise error_status 4 are distinguished, because they
++    // mean different things. A split frame header that reads as the maximum
++    // length is malformed input. A missing next packet may simply mean the
++    // guest has not supplied the following buffer yet, which is a temporary
++    // condition rather than a stream error.
++    uint64_t err_header_split = 0;
++    uint64_t err_next_packet = 0;
++    // Subset of err_next_packet where no other input buffer was valid either,
++    // so there was genuinely nothing more to read at that moment.
++    uint64_t err_next_packet_starved = 0;
++    // Times that starved case was treated as a stall instead of a stream error.
++    uint64_t stalls_waiting_for_input = 0;
++    // Stalls that exceeded the wait budget and fell back to the stream error.
++    // A stream that genuinely ended mid-frame reaches this and terminates,
++    // instead of waiting forever for a buffer the guest will never supply.
++    uint64_t stall_timeouts = 0;
++
++    // How stalls that did NOT time out ended, and how long they took. If the
++    // typical wait is short, the timeout only ends genuinely finished streams.
++    // If waits are spread up to the timeout, the guest is chronically late and
++    // the timeout is cutting live streams.
++    uint64_t stall_resolved = 0;
++    uint64_t stall_resolved_by_swap = 0;
++    uint64_t stall_us_sum = 0;
++    uint64_t stall_us_max = 0;
++    uint64_t stall_fast = 0;    // under 5 ms
++    uint64_t stall_medium = 0;  // 5 to 30 ms
++    uint64_t stall_slow = 0;    // 30 ms and above
++
++    // The guest can write the read offset itself, and StoreContextMerged
++    // preserves guest writes. Detecting that separates "we moved the stream
++    // backwards" from "the title rewound its own stream", which are opposite
++    // conclusions for the repeated-fragment symptom.
++    uint64_t guest_offset_changes = 0;
++    uint64_t guest_offset_rewinds = 0;
++    // Consumed buffers released so the guest could supply the continuation of
++    // a split frame, instead of holding the buffer and deadlocking.
++    uint64_t split_releases = 0;
++    uint64_t buffer_swaps = 0;
++    uint64_t loop_resets = 0;
++    // Decodes that started from an input offset already covered since the last
++    // buffer swap. A stream repeating a section reports this while its decode
++    // rate still looks healthy, which separates repetition from starvation.
++    uint64_t offset_repeats = 0;
++    uint32_t sample_rate = 0;
++    uint32_t input_valid = 0;
++
++    bool HasActivity() const {
++      return decoded_frames || decode_errors || buffer_swaps || loop_resets ||
++             offset_repeats || err_next_packet || guest_offset_changes ||
++             split_releases;
++    }
++  };
++
++  // Returns the counters accumulated since the previous call and resets them.
++  Telemetry DrainTelemetry() {
++    Telemetry drained = telemetry_;
++    telemetry_ = Telemetry{};
++    return drained;
++  }
++
+   void SignalWorkDone() {
+     if (work_completion_event_) {
+       work_completion_event_->Set();
+@@ -229,7 +296,9 @@ class XmaContext {
+   }
+ 
+  private:
+-  static void SwapInputBuffer(XMA_CONTEXT_DATA* data);
++  // Not static: swapping is the event that proves the guest is still feeding
++  // this stream, so it is counted here rather than at six call sites.
++  void SwapInputBuffer(XMA_CONTEXT_DATA* data);
+   static int GetSampleRate(int id);
+   static int16_t GetPacketNumber(size_t size, size_t bit_offset);
+   static uint32_t GetCurrentInputBufferSize(XMA_CONTEXT_DATA* data);
+@@ -290,6 +359,20 @@ class XmaContext {
+   // Loop subframe precision state
+   uint8_t loop_frame_output_limit_ = 0;
+   bool loop_start_skip_pending_ = false;
++
++  Telemetry telemetry_;
++  // Host tick when the current uninterrupted stall began, or zero when the
++  // stream is progressing. Cleared by a successful decode and by a buffer swap.
++  uint64_t stall_since_tick_ = 0;
++  // Records how a stall ended, before clearing the timestamp.
++  void EndStall(bool by_swap);
++  // Read offset this context last wrote back to guest memory, used to notice
++  // when the value changed underneath us before the next Work().
++  uint32_t last_stored_read_offset_ = 0;
++  bool has_stored_read_offset_ = false;
++  // Highest input offset decoded since the last buffer swap. A decode starting
++  // below it means the stream went backwards without being refilled.
++  uint32_t telemetry_max_offset_since_swap_ = 0;
+ };
+ 
+ }  // namespace rex::audio
+diff --git a/src/audio/audio_system.cpp b/src/audio/audio_system.cpp
+index 5f29c94..b5eed4f 100644
+--- a/src/audio/audio_system.cpp
++++ b/src/audio/audio_system.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <rex/assert.h>
+ #include <rex/audio/audio_driver.h>
++#include <rex/chrono/clock.h>
+ #include <rex/audio/audio_system.h>
+ #include <rex/audio/flags.h>
+ #include <rex/audio/xma/decoder.h>
+@@ -55,6 +56,13 @@ AudioSystem::AudioSystem(runtime::FunctionDispatcher* function_dispatcher)
+       static_cast<uint32_t>(kMaximumQueuedFrames),
+       std::max(static_cast<uint32_t>(REXCVAR_GET(audio_maxqframes)), static_cast<uint32_t>(4)));
+ 
++  // The requested value is clamped, so log both. A capture is then
++  // self-identifying and a clamped request cannot be mistaken for a run that
++  // genuinely used the requested depth.
++  REXAPU_INFO("NARUTO_AUDIO_QUEUE_CONFIG requested={} effective={} frame_ms={:.2f} buffered_ms={:.0f}",
++              REXCVAR_GET(audio_maxqframes), queued_frames_, 256000.0 / 48000.0,
++              queued_frames_ * 256000.0 / 48000.0);
++
+   for (size_t i = 0; i < kMaximumClientCount; ++i) {
+     client_semaphores_[i] = rex::thread::Semaphore::Create(0, queued_frames_);
+     assert_not_null(client_semaphores_[i]);
+@@ -101,7 +109,34 @@ void AudioSystem::WorkerThreadMain() {
+ 
+   // Main run loop.
+   uint32_t diag_pump_count = 0;
++  uint64_t flow_telemetry_last_tick = rex::chrono::Clock::QueryHostTickCount();
+   while (worker_running_) {
++    // Give drivers a periodic, non-real-time point to report flow counters.
++    {
++      const uint64_t tick_frequency = rex::chrono::Clock::QueryHostTickFrequency();
++      const uint64_t now_tick = rex::chrono::Clock::QueryHostTickCount();
++      if (now_tick - flow_telemetry_last_tick >= tick_frequency) {
++        flow_telemetry_last_tick = now_tick;
++        // Snapshot the drivers under the global lock, then report outside it.
++        // ReportFlowTelemetry takes the driver's own frame mutex, and holding
++        // two audio locks at once to emit a diagnostic is not worth the risk of
++        // introducing a stall in the audio path.
++        AudioDriver* drivers[kMaximumClientCount] = {};
++        size_t driver_count = 0;
++        {
++          auto telemetry_lock = global_critical_region_.Acquire();
++          for (size_t i = 0; i < kMaximumClientCount; ++i) {
++            if (clients_[i].in_use && clients_[i].driver) {
++              drivers[driver_count++] = clients_[i].driver;
++            }
++          }
++        }
++        for (size_t i = 0; i < driver_count; ++i) {
++          drivers[i]->ReportFlowTelemetry();
++        }
++      }
++    }
++
+     // These handles signify the number of submitted samples. Once we reach
+     // 64 samples, we wait until our audio backend releases a semaphore
+     // (signaling a sample has finished playing)
+diff --git a/src/audio/sdl/sdl_audio_driver.cpp b/src/audio/sdl/sdl_audio_driver.cpp
+index 047cdb8..a438621 100644
+--- a/src/audio/sdl/sdl_audio_driver.cpp
++++ b/src/audio/sdl/sdl_audio_driver.cpp
+@@ -27,6 +27,11 @@
+ #include <SDL3/SDL.h>
+ 
+ REXCVAR_DEFINE_BOOL(audio_mute, false, "Audio", "Mute audio output");
++REXCVAR_DEFINE_BOOL(naruto_audio_flow_telemetry, false, "Audio",
++                    "Report output-side queue depth, underrun time and waveform "
++                    "discontinuities once per second. The real-time callback "
++                    "only increments counters; formatting happens on the audio "
++                    "worker thread.");
+ REXCVAR_DEFINE_BOOL(audio_stereo_front_only, false, "Audio",
+                     "Use front and center channels only on stereo devices");
+ REXCVAR_DEFINE_BOOL(audio_silence_diagnostics, false, "Audio",
+@@ -246,6 +251,32 @@ void SDLAudioDriver::AccumulateInputDiagnostics(const float* input) {
+   }
+ }
+ 
++void SDLAudioDriver::ReportFlowTelemetry() {
++  if (!REXCVAR_GET(naruto_audio_flow_telemetry)) {
++    return;
++  }
++  const FlowTelemetry flow = DrainFlowTelemetry();
++  if (flow.callbacks == 0) {
++    return;
++  }
++  constexpr double kChunkMs = 1000.0 * static_cast<double>(channel_samples_) / frame_frequency_;
++  REXAPU_INFO(
++      "NARUTO_AUDIO_FLOW callbacks={} queued_avg={:.2f} queued_min={} "
++      "underrun_chunks={} underrun_ms={:.1f} discontinuity_events={} "
++      "max_discontinuity={:.3f}",
++      flow.callbacks, static_cast<double>(flow.queued_sum) / static_cast<double>(flow.callbacks),
++      flow.queued_min == 0xFFFFFFFF ? 0 : flow.queued_min, flow.underrun_chunks,
++      static_cast<double>(flow.underrun_chunks) * kChunkMs, flow.discontinuity_events,
++      flow.max_discontinuity);
++}
++
++SDLAudioDriver::FlowTelemetry SDLAudioDriver::DrainFlowTelemetry() {
++  std::lock_guard<std::mutex> guard(frames_mutex_);
++  FlowTelemetry drained = flow_telemetry_;
++  flow_telemetry_ = FlowTelemetry{};
++  return drained;
++}
++
+ void SDLAudioDriver::LogInputDiagnosticsSummary() {
+   if (!REXCVAR_GET(audio_silence_diagnostics) || !diagnostic_frame_count_) {
+     return;
+@@ -294,6 +325,17 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+     // underruns again, which is what turns one stall into a burst of clicks.
+     const bool starved = driver->frames_queued_.empty() ||
+                          (driver->in_underrun_ && driver->frames_queued_.size() < kRefillFrames);
++
++    // Counter-only flow sampling. This runs under frames_mutex_, which the
++    // callback already holds here.
++    ++driver->flow_telemetry_.callbacks;
++    const uint32_t queued_now = static_cast<uint32_t>(driver->frames_queued_.size());
++    driver->flow_telemetry_.queued_sum += queued_now;
++    driver->flow_telemetry_.queued_min = std::min(driver->flow_telemetry_.queued_min, queued_now);
++    if (starved) {
++      ++driver->flow_telemetry_.underrun_chunks;
++    }
++
+     if (starved) {
+       // Keep diagnostics out of the normal audio path. On underrun, emit at
+       // most one marker per second so a cutscene test can be correlated with
+@@ -357,6 +399,22 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+         }
+       }
+ 
++      // Measure the seam before the ramp-in smooths it, so the counter sees
++      // the discontinuity the concealment is there to hide rather than the
++      // concealed result. Arithmetic only: no formatting, no allocation.
++      if (!driver->in_underrun_) {
++        float worst_step = 0.0f;
++        for (uint8_t ch = 0; ch < channels; ++ch) {
++          const float step = std::abs(data[ch] - driver->last_samples_[ch]);
++          worst_step = std::max(worst_step, step);
++        }
++        if (worst_step > kDiscontinuityThreshold) {
++          ++driver->flow_telemetry_.discontinuity_events;
++        }
++        driver->flow_telemetry_.max_discontinuity =
++            std::max(driver->flow_telemetry_.max_discontinuity, worst_step);
++      }
++
+       if (driver->in_underrun_) {
+         // First real chunk after a gap: ramp in from silence for the same
+         // reason we ramped out.
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+index 8dcdd0b..df8f6a6 100644
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -15,6 +15,8 @@
+ #include <rex/audio/xma/context.h>
+ #include <rex/audio/xma/decoder.h>
+ #include <rex/audio/xma/helpers.h>
++#include <rex/chrono/clock.h>
++#include <rex/cvar.h>
+ #include <rex/dbg.h>
+ #include <rex/logging.h>
+ #include <rex/memory/ring_buffer.h>
+@@ -36,6 +38,24 @@ extern "C" {
+ // Credits for most of this code goes to:
+ // https://github.com/koolkdev/libertyv/blob/master/libav_wrapper/xma2dec.c
+ 
++REXCVAR_DEFINE_BOOL(naruto_xma_stall_on_missing_input, false, "Audio",
++                    "Treat a frame that needs an input buffer the guest has not "
++                    "supplied yet as a stall rather than a stream error. "
++                    "Disabled by default so the original behaviour stays the "
++                    "reference until this is validated.");
++REXCVAR_DEFINE_BOOL(naruto_xma_release_buffer_on_split, false, "Audio",
++                    "When a frame body needs a packet from the next input "
++                    "buffer, release the consumed buffer so the guest can "
++                    "supply it, instead of holding it and waiting. The title "
++                    "keeps only one buffer valid at a time, so holding it "
++                    "deadlocks the stream. Costs the leading part of the split "
++                    "frame until partial-frame retention is implemented.");
++REXCVAR_DEFINE_DOUBLE(naruto_xma_stall_timeout_ms, 100.0, "Audio",
++                      "How long a stalled stream waits for the guest to supply "
++                      "its next input buffer before reporting the stream error "
++                      "after all. A stream that ends on a split frame relies on "
++                      "this to terminate instead of staying silent forever.");
++
+ namespace rex::audio {
+ 
+ using stream::BitStream;
+@@ -104,6 +124,17 @@ bool XmaContext::Work() {
+   XMA_CONTEXT_DATA data(context_ptr);
+   const XMA_CONTEXT_DATA initial_data = data;
+ 
++  // The read offset seen now should be the one this context stored last time.
++  // Anything else was written by the title, and StoreContextMerged preserves
++  // such writes. A backwards move by the title is the title rewinding its own
++  // stream, which is the opposite conclusion from the decoder losing its place.
++  if (has_stored_read_offset_ && data.input_buffer_read_offset != last_stored_read_offset_) {
++    ++telemetry_.guest_offset_changes;
++    if (data.input_buffer_read_offset < last_stored_read_offset_) {
++      ++telemetry_.guest_offset_rewinds;
++    }
++  }
++
+   if (!data.output_buffer_valid) {
+     return true;
+   }
+@@ -121,6 +152,8 @@ bool XmaContext::Work() {
+       data.output_buffer_valid = 0;
+     }
+     StoreContextMerged(data, initial_data, context_ptr);
++    last_stored_read_offset_ = data.input_buffer_read_offset;
++    has_stored_read_offset_ = true;
+     return true;
+   }
+ 
+@@ -132,11 +165,20 @@ bool XmaContext::Work() {
+ 
+   if (minimum_subframe_decode_count > remaining_subframe_blocks_in_output_buffer_) {
+     StoreContextMerged(data, initial_data, context_ptr);
++    last_stored_read_offset_ = data.input_buffer_read_offset;
++    has_stored_read_offset_ = true;
+     return true;
+   }
+ 
+   while (remaining_subframe_blocks_in_output_buffer_ >= minimum_subframe_decode_count) {
+     const uint32_t pre_decode_offset = data.input_buffer_read_offset;
++    if (pre_decode_offset < telemetry_max_offset_since_swap_) {
++      ++telemetry_.offset_repeats;
++    } else {
++      telemetry_max_offset_since_swap_ = pre_decode_offset;
++    }
++    telemetry_.input_valid =
++        (data.input_buffer_0_valid ? 1u : 0u) + (data.input_buffer_1_valid ? 1u : 0u);
+     const uint8_t pre_remaining_subframes = current_frame_remaining_subframes_;
+     Decode(&data);
+     Consume(&output_rb, &data);
+@@ -164,6 +206,8 @@ bool XmaContext::Work() {
+   }
+ 
+   StoreContextMerged(data, initial_data, context_ptr);
++  last_stored_read_offset_ = data.input_buffer_read_offset;
++  has_stored_read_offset_ = true;
+   return true;
+ }
+ 
+@@ -225,6 +269,8 @@ void XmaContext::ClearLocked(XMA_CONTEXT_DATA* data) {
+   current_frame_remaining_subframes_ = 0;
+   loop_frame_output_limit_ = 0;
+   loop_start_skip_pending_ = false;
++  // A cleared context must not inherit a wait from the stream it replaced.
++  stall_since_tick_ = 0;
+   raw_frame_.fill(0);
+   xma_frame_.fill(0);
+ }
+@@ -251,6 +297,34 @@ void XmaContext::SwapInputBuffer(XMA_CONTEXT_DATA* data) {
+   }
+   data->current_buffer ^= 1;
+   data->input_buffer_read_offset = kBitsPerPacketHeader;
++  ++telemetry_.buffer_swaps;
++  telemetry_max_offset_since_swap_ = 0;
++  // The guest supplied data, so any wait in progress is over.
++  EndStall(true);
++}
++
++void XmaContext::EndStall(bool by_swap) {
++  if (stall_since_tick_ == 0) {
++    return;
++  }
++  const uint64_t elapsed_us =
++      (rex::chrono::Clock::QueryHostTickCount() - stall_since_tick_) * 1000000ull /
++      std::max<uint64_t>(1, rex::chrono::Clock::QueryHostTickFrequency());
++  stall_since_tick_ = 0;
++
++  ++telemetry_.stall_resolved;
++  if (by_swap) {
++    ++telemetry_.stall_resolved_by_swap;
++  }
++  telemetry_.stall_us_sum += elapsed_us;
++  telemetry_.stall_us_max = std::max(telemetry_.stall_us_max, elapsed_us);
++  if (elapsed_us < 5000) {
++    ++telemetry_.stall_fast;
++  } else if (elapsed_us < 30000) {
++    ++telemetry_.stall_medium;
++  } else {
++    ++telemetry_.stall_slow;
++  }
+ }
+ 
+ void XmaContext::UpdateLoopStatus(XMA_CONTEXT_DATA* data) {
+@@ -267,6 +341,10 @@ void XmaContext::UpdateLoopStatus(XMA_CONTEXT_DATA* data) {
+ 
+   data->input_buffer_read_offset = loop_start;
+   loop_start_skip_pending_ = true;
++  // A legitimate loop also moves the offset backwards, so it is counted here.
++  // Repetition with loop_resets is the title looping on purpose; repetition
++  // without it means the stream is stuck on a buffer that was never refilled.
++  ++telemetry_.loop_resets;
+ 
+   if (data->loop_count < 255) {
+     data->loop_count--;
+@@ -677,6 +755,8 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+     uint64_t frame_size = combined.Peek(kBitsPerFrameHeader);
+     if (frame_size == xma::kMaxFrameLength) {
+       data->error_status = 4;
++      ++telemetry_.decode_errors;
++      ++telemetry_.err_header_split;
+       return;
+     }
+     packet_info.current_frame_size_ = static_cast<uint32_t>(frame_size);
+@@ -699,7 +779,64 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+       const uint8_t* next_packet =
+           GetNextPacket(data, next_packet_index, current_input_packet_count);
+       if (!next_packet) {
++        ++telemetry_.err_next_packet;
++        // Distinguish "the guest has not fed the other buffer yet" from "the
++        // packet should have been reachable". Only the first is temporary.
++        const bool starved =
++            !data->IsAnyInputBufferValid() ||
++            (data->current_buffer == 0 ? !data->input_buffer_1_valid
++                                       : !data->input_buffer_0_valid);
++        if (starved) {
++          ++telemetry_.err_next_packet_starved;
++        }
++
++        // Measurement showed the title keeps exactly one input buffer valid at
++        // a time in 97% of samples. Holding the consumed buffer while waiting
++        // for the next one therefore deadlocks: the decoder waits for data the
++        // guest cannot supply until the decoder releases what it already has.
++        // Releasing it is what the frame-header split path a few lines above
++        // has always done. This loses the leading part of the split frame,
++        // which is a short seam rather than a stall and a stream restart.
++        if (starved && REXCVAR_GET(naruto_xma_release_buffer_on_split)) {
++          ++telemetry_.split_releases;
++          SwapInputBuffer(data);
++          return;
++        }
++
++        // A frame split across two input buffers cannot finish until the guest
++        // supplies the following one. The hardware simply produces no output
++        // that tick. Reporting a stream error instead both tells the guest the
++        // stream failed and leaves the read offset in place, so the next Work()
++        // restarts from the same position and replays the same fragment.
++        // Measurement found this to be every decode error in the session, all
++        // of them starved, so the starved case is treated as a stall.
++        if (starved && REXCVAR_GET(naruto_xma_stall_on_missing_input)) {
++          // The wait has to be bounded. A stream that ends on a split frame
++          // never receives another buffer, and an unbounded stall leaves that
++          // stream silent forever. Measurement of the unbounded version found
++          // seven streams stuck this way, one of them for 21 seconds.
++          const uint64_t now_tick = rex::chrono::Clock::QueryHostTickCount();
++          if (stall_since_tick_ == 0) {
++            stall_since_tick_ = now_tick;
++          }
++          const double waited_ms =
++              1000.0 * static_cast<double>(now_tick - stall_since_tick_) /
++              static_cast<double>(rex::chrono::Clock::QueryHostTickFrequency());
++          if (waited_ms < REXCVAR_GET(naruto_xma_stall_timeout_ms)) {
++            ++telemetry_.stalls_waiting_for_input;
++            // The read offset is deliberately unchanged. Work() exits its loop
++            // because no subframe was produced and the offset did not advance,
++            // so this cannot spin.
++            return;
++          }
++          ++telemetry_.stall_timeouts;
++          stall_since_tick_ = 0;
++          // Fall through to the original stream error so the guest is told the
++          // stream is finished.
++        }
++
+         data->error_status = 4;
++        ++telemetry_.decode_errors;
+         return;
+       }
+       std::memcpy(input_buffer_.data() + kBytesPerPacketData, next_packet + kBytesPerPacketHeader,
+@@ -725,6 +862,10 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+     ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data), bool(data->is_stereo),
+                  raw_frame_.data());
+     current_frame_remaining_subframes_ = 4 << data->is_stereo;
++    ++telemetry_.decoded_frames;
++    telemetry_.sample_rate = GetSampleRate(data->sample_rate);
++    // The stream is progressing again without a swap having been needed.
++    EndStall(false);
+ 
+     // Loop end: limit output to subframes 0..loop_subframe_end.
+     if (is_loop_end_frame) {
+diff --git a/src/audio/xma_decoder.cpp b/src/audio/xma_decoder.cpp
+index 3793ee7..782ca35 100644
+--- a/src/audio/xma_decoder.cpp
++++ b/src/audio/xma_decoder.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <rex/audio/xma/context.h>
+ #include <rex/audio/xma/decoder.h>
++#include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
+ #include <rex/dbg.h>
+ #include <rex/logging.h>
+@@ -27,6 +28,10 @@ extern "C" {
+ }  // extern "C"
+ 
+ REXCVAR_DEFINE_BOOL(ffmpeg_verbose, false, "Audio", "Verbose FFmpeg output (debug and above)");
++REXCVAR_DEFINE_BOOL(naruto_xma_stream_telemetry, false, "Audio",
++                    "Report per-context stream continuity once per second. "
++                    "Counters are accumulated on the decoder worker thread and "
++                    "never touch the real-time audio callback.");
+ REXCVAR_DEFINE_BOOL(use_dedicated_xma_thread, true, "Audio",
+                     "Decode XMA on a dedicated host thread")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+@@ -145,6 +150,11 @@ X_STATUS XmaDecoder::Setup(system::KernelState* kernel_state) {
+ }
+ 
+ void XmaDecoder::WorkerThreadMain() {
++  // Stream continuity telemetry. Counters are accumulated inside Work() on this
++  // thread and drained here, so no formatting or I/O ever reaches the real-time
++  // audio callback. Only contexts with activity are reported.
++  uint64_t telemetry_last_tick = rex::chrono::Clock::QueryHostTickCount();
++
+   while (worker_running_) {
+     // Okay, let's loop through XMA contexts to find ones we need to decode!
+     bool did_work = false;
+@@ -158,6 +168,54 @@ void XmaDecoder::WorkerThreadMain() {
+       did_work = did_work || worked;
+     }
+ 
++    if (REXCVAR_GET(naruto_xma_stream_telemetry)) {
++      const uint64_t tick_frequency = rex::chrono::Clock::QueryHostTickFrequency();
++      const uint64_t now_tick = rex::chrono::Clock::QueryHostTickCount();
++      if (now_tick - telemetry_last_tick >= tick_frequency) {
++        const double wall_seconds =
++            static_cast<double>(now_tick - telemetry_last_tick) / static_cast<double>(tick_frequency);
++        telemetry_last_tick = now_tick;
++
++        for (uint32_t n = 0; n < kContextCount; n++) {
++          XmaContext::Telemetry stream = contexts_[n].DrainTelemetry();
++          if (!stream.HasActivity()) {
++            continue;
++          }
++          // One XMA frame carries 512 samples per channel, so decoded audio
++          // seconds divided by real seconds is the stream's fill ratio. A
++          // healthy stream reports 1.0, a starving one reports less, and a
++          // repeating one stays near 1.0 while offset_repeats climbs.
++          const double decoded_seconds =
++              stream.sample_rate > 0
++                  ? static_cast<double>(stream.decoded_frames) * 512.0 /
++                        static_cast<double>(stream.sample_rate)
++                  : 0.0;
++          REXAPU_INFO(
++              "NARUTO_XMA_STREAM ctx={} decoded_frames={} decoded_ms={:.1f} "
++              "wall_ms={:.1f} fill_ratio={:.3f} buffer_swaps={} loop_resets={} "
++              "offset_repeats={} decode_errors={} err_header_split={} "
++              "err_next_packet={} err_next_packet_starved={} stalls={} "
++              "stall_timeouts={} stall_resolved={} stall_by_swap={} "
++              "stall_avg_us={} stall_max_us={} stall_fast={} stall_medium={} "
++              "stall_slow={} guest_offset_changes={} guest_offset_rewinds={} "
++              "split_releases={} "
++              "input_valid={} rate={}",
++              n, stream.decoded_frames, decoded_seconds * 1000.0, wall_seconds * 1000.0,
++              wall_seconds > 0.0 ? decoded_seconds / wall_seconds : 0.0, stream.buffer_swaps,
++              stream.loop_resets, stream.offset_repeats, stream.decode_errors,
++              stream.err_header_split, stream.err_next_packet,
++              stream.err_next_packet_starved, stream.stalls_waiting_for_input,
++              stream.stall_timeouts, stream.stall_resolved,
++              stream.stall_resolved_by_swap,
++              stream.stall_resolved ? stream.stall_us_sum / stream.stall_resolved : 0,
++              stream.stall_us_max, stream.stall_fast, stream.stall_medium,
++              stream.stall_slow, stream.guest_offset_changes,
++              stream.guest_offset_rewinds, stream.split_releases, stream.input_valid,
++              stream.sample_rate);
++        }
++      }
++    }
++
+     if (paused_) {
+       pause_fence_.Signal();
+       resume_fence_.Wait();
